@@ -167,6 +167,7 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 			}
 			content := data.FormatHistory(msgs, verbose)
 			content = cleanLogContent(content)
+			content = compressLogContent(content)
 			query := extractQuery(content)
 			return logsMsg{content: content, query: query, messages: msgs, logTab: logTab}
 		case tabHistory:
@@ -176,6 +177,7 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 				return errMsg{fmt.Errorf("history(%s): %w", id, err)}
 			}
 			content = cleanLogContent(content)
+			content = compressLogContent(content)
 			query := extractQuery(content)
 			return logsMsg{content: content, query: query, logTab: logTab}
 		default:
@@ -197,6 +199,77 @@ func cleanLogContent(content string) string {
 	// Replace standalone carriage returns (Docker progress bars)
 	content = strings.ReplaceAll(content, "\r", "\n")
 	return content
+}
+
+// compressLogContent removes verbose noise from agent transcripts:
+// - Strips consecutive ASSISTANT headers (keeps only the last before real content)
+// - Removes planning filler lines ("Now let's...", "Now I'll...", "Let me...", etc.)
+// - Collapses blank lines
+func compressLogContent(content string) string {
+	lines := strings.Split(content, "\n")
+	var out []string
+	prevBlank := false
+	prevAssistantHeader := ""
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Detect ASSISTANT headers like "─── ASSISTANT (model) ───"
+		if strings.HasPrefix(trimmed, "─── ASSISTANT") && strings.HasSuffix(trimmed, "───") {
+			// Buffer the header; only emit if followed by real content
+			prevAssistantHeader = line
+			prevBlank = false
+			continue
+		}
+
+		// Skip planning filler
+		if isPlanningFiller(trimmed) {
+			continue
+		}
+
+		// Collapse multiple blank lines
+		if trimmed == "" {
+			if prevBlank {
+				continue
+			}
+			prevBlank = true
+			out = append(out, line)
+			continue
+		}
+		prevBlank = false
+
+		// If we have a buffered header and this is real content, emit header first
+		if prevAssistantHeader != "" {
+			out = append(out, prevAssistantHeader)
+			prevAssistantHeader = ""
+		}
+
+		out = append(out, line)
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// isPlanningFiller returns true for low-value planning/narration lines.
+func isPlanningFiller(line string) bool {
+	lower := strings.ToLower(line)
+	fillerPrefixes := []string{
+		"now let's", "now let me", "now i'll", "now i need to",
+		"now update", "now we need", "now we'll",
+		"let me now", "let's now",
+		"next, i'll", "next, let's", "next i'll", "next let's",
+		"i'll now", "i need to now",
+	}
+	for _, p := range fillerPrefixes {
+		if strings.HasPrefix(lower, p) {
+			// Only strip if line ends with ":"  (intro to a tool call)
+			if strings.HasSuffix(strings.TrimSpace(line), ":") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractQuery finds the first user message in the log content
@@ -508,7 +581,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.verboseLevel = m.verboseLevel.Next()
 		// Re-render cached messages if we have them
 		if len(m.cachedMessages) > 0 && m.selectedLogTab != tabProcesses {
-			m.logContent = data.FormatHistory(m.cachedMessages, m.verboseLevel)
+			m.logContent = compressLogContent(data.FormatHistory(m.cachedMessages, m.verboseLevel))
 			if m.logFollow {
 				m.logScrollPos = 999999
 			}
