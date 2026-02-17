@@ -222,8 +222,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logsMsg:
 		m.logContent = msg.content
 		if m.logFollow {
-			lines := strings.Split(msg.content, "\n")
-			m.logScrollPos = max(0, len(lines)-m.logViewHeight())
+			// Set to max int; renderLogPanel will clamp it
+			m.logScrollPos = 999999
 		}
 		return m, nil
 
@@ -237,8 +237,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Append reply to log content and refresh
 		m.logContent += "\n─── SENT ───\n" + msg.reply + "\n"
 		if m.logFollow {
-			lines := strings.Split(m.logContent, "\n")
-			m.logScrollPos = max(0, len(lines)-m.logViewHeight())
+			m.logScrollPos = 999999
 		}
 		// Refresh the session history
 		if m.selectedLogID != "" {
@@ -401,9 +400,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.Follow):
 		m.logFollow = !m.logFollow
-		if m.logFollow && m.logContent != "" {
-			lines := strings.Split(m.logContent, "\n")
-			m.logScrollPos = max(0, len(lines)-m.logViewHeight())
+		if m.logFollow {
+			m.logScrollPos = 999999
 		}
 		return m, nil
 
@@ -843,7 +841,19 @@ func (m Model) renderLogPanel(width, height int) string {
 		return b.String()
 	}
 
-	lines := strings.Split(m.logContent, "\n")
+	// Pre-wrap lines to fit width
+	rawLines := strings.Split(m.logContent, "\n")
+	var lines []string
+	for _, line := range rawLines {
+		if width > 0 && len(line) > width {
+			for len(line) > width {
+				lines = append(lines, line[:width])
+				line = line[width:]
+			}
+		}
+		lines = append(lines, line)
+	}
+
 	viewH := height - 3
 	if viewH < 1 {
 		viewH = 1
@@ -859,11 +869,6 @@ func (m Model) renderLogPanel(width, height int) string {
 	}
 
 	for _, line := range lines[start:end] {
-		// Wrap long lines instead of truncating
-		for len(line) > width {
-			b.WriteString(line[:width] + "\n")
-			line = line[width:]
-		}
 		b.WriteString(line + "\n")
 	}
 
