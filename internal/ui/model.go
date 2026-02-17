@@ -166,8 +166,19 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 			}
 			return errMsg{fmt.Errorf("%s(%s): %w", kind, id, err)}
 		}
+		// Clean up Docker progress bars and carriage returns
+		content = cleanLogContent(content)
 		return logsMsg{content}
 	}
+}
+
+// cleanLogContent removes carriage returns and other problematic characters
+func cleanLogContent(content string) string {
+	// Replace Windows line endings
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	// Replace standalone carriage returns (Docker progress bars)
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return content
 }
 
 // Tick commands for periodic refresh
@@ -235,7 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentReplyMsg:
 		m.sending = false
 		// Append reply to log content and refresh
-		m.logContent += "\n─── SENT ───\n" + msg.reply + "\n"
+		reply := cleanLogContent(msg.reply)
+		m.logContent += "\n─── SENT ───\n" + reply + "\n"
 		if m.logFollow {
 			m.logScrollPos = 999999
 		}
