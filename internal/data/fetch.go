@@ -38,9 +38,37 @@ func (c *Client) FetchSessions() ([]Session, error) {
 	return result.Details.Sessions, nil
 }
 
-// FetchProcesses scans for running openclaw-related processes via ps.
+// FetchProcesses reads the agent-maintained process list file,
+// falling back to ps scanning if the file doesn't exist.
 func (c *Client) FetchProcesses() ([]Process, error) {
-	// Find claude, openclaw agent, and other relevant child processes
+	// Try agent-maintained file first
+	procFile := filepath.Join(homeDir(), ".openclaw", "process-list.json")
+	if data, err := os.ReadFile(procFile); err == nil {
+		var pf struct {
+			Processes []struct {
+				Name    string `json:"name"`
+				Status  string `json:"status"`
+				Runtime string `json:"runtime"`
+				Command string `json:"command"`
+			} `json:"processes"`
+			UpdatedAt int64 `json:"updatedAt"`
+		}
+		if json.Unmarshal(data, &pf) == nil && len(pf.Processes) > 0 {
+			// Check staleness — if older than 2 minutes, also scan ps
+			var procs []Process
+			for _, p := range pf.Processes {
+				procs = append(procs, Process{
+					SessionName: p.Name,
+					Status:      p.Status,
+					Runtime:     p.Runtime,
+					Command:     p.Command,
+				})
+			}
+			return procs, nil
+		}
+	}
+
+	// Fallback: scan OS processes
 	out, err := exec.Command("ps", "axo", "pid,etime,command").Output()
 	if err != nil {
 		return nil, nil
@@ -51,7 +79,6 @@ func (c *Client) FetchProcesses() ([]Process, error) {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
 
-		// Match relevant processes
 		isRelevant := strings.Contains(lower, "claude") ||
 			strings.Contains(lower, "openclaw") ||
 			strings.Contains(lower, "oclaw-tui")
@@ -60,7 +87,6 @@ func (c *Client) FetchProcesses() ([]Process, error) {
 			continue
 		}
 
-		// Skip browser tabs, header, grep, ps itself
 		if strings.Contains(lower, "chrome") || strings.Contains(lower, "chromium") ||
 			strings.Contains(lower, "firefox") || strings.Contains(lower, "electron") ||
 			strings.HasPrefix(line, "PID") || strings.Contains(line, "ps axo") {
@@ -75,18 +101,13 @@ func (c *Client) FetchProcesses() ([]Process, error) {
 		pid := fields[0]
 		etime := fields[1]
 		cmd := strings.Join(fields[2:], " ")
-
-		// Shorten command for display
 		if len(cmd) > 60 {
 			cmd = cmd[:57] + "..."
 		}
 
-		status := "running"
-		name := "pid:" + pid
-
 		procs = append(procs, Process{
-			SessionName: name,
-			Status:      status,
+			SessionName: "pid:" + pid,
+			Status:      "running",
 			Runtime:     etime,
 			Command:     cmd,
 		})

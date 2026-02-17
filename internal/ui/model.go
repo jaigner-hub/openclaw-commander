@@ -859,8 +859,10 @@ func (m Model) renderLogPanel(width, height int) string {
 	}
 
 	for _, line := range lines[start:end] {
-		if len(line) > width {
-			line = line[:width]
+		// Wrap long lines instead of truncating
+		for len(line) > width {
+			b.WriteString(line[:width] + "\n")
+			line = line[width:]
 		}
 		b.WriteString(line + "\n")
 	}
