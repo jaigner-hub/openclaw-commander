@@ -386,6 +386,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activePanel == panelList {
 			m.moveCursor(-1)
 		} else {
+			m.clampLogScroll()
 			m.logScrollPos = max(0, m.logScrollPos-1)
 			m.logFollow = false
 		}
@@ -395,6 +396,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activePanel == panelList {
 			m.moveCursor(1)
 		} else {
+			m.clampLogScroll()
 			m.logScrollPos++
 			m.logFollow = false
 		}
@@ -402,7 +404,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.PageUp):
 		if m.activePanel == panelLogs {
-			pageSize := 10 // Fixed page size
+			m.clampLogScroll()
+			pageSize := m.logViewHeight() - 3
+			if pageSize < 1 {
+				pageSize = 10
+			}
 			m.logScrollPos = max(0, m.logScrollPos-pageSize)
 			m.logFollow = false
 		}
@@ -410,7 +416,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.PageDown):
 		if m.activePanel == panelLogs {
-			pageSize := 10 // Fixed page size
+			m.clampLogScroll()
+			pageSize := m.logViewHeight() - 3
+			if pageSize < 1 {
+				pageSize = 10
+			}
 			m.logScrollPos += pageSize
 			m.logFollow = false
 		}
@@ -623,6 +633,28 @@ func (m Model) selectedItemID() string {
 		}
 	}
 	return ""
+}
+
+func (m *Model) clampLogScroll() {
+	if m.logContent == "" {
+		m.logScrollPos = 0
+		return
+	}
+	lines := strings.Split(m.logContent, "\n")
+	viewH := m.logViewHeight() - 3
+	if m.currentQuery != "" {
+		viewH--
+	}
+	if viewH < 1 {
+		viewH = 1
+	}
+	maxScroll := len(lines) - viewH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.logScrollPos > maxScroll {
+		m.logScrollPos = maxScroll
+	}
 }
 
 func (m Model) logViewHeight() int {
