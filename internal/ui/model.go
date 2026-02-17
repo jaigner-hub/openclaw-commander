@@ -32,7 +32,7 @@ type tickHealthMsg struct{}
 // Data messages
 type sessionsMsg struct{ sessions []data.Session }
 type processesMsg struct{ processes []data.Process }
-type logsMsg struct{ content string; query string }
+type logsMsg struct{ content string; query string; messages []data.HistoryMessage; logTab int }
 type healthMsg struct{ health *data.GatewayHealth }
 type errMsg struct{ err error }
 type agentReplyMsg struct{ reply string }
@@ -81,6 +81,13 @@ type Model struct {
 	sending      bool   // true while waiting for agent reply
 
 	lastError string
+
+	// Verbose level for tool display
+	verboseLevel data.VerboseLevel
+
+	// Cached messages for re-rendering with different verbose levels
+	cachedMessages []data.HistoryMessage
+	cachedLogTab   int
 
 	client *data.Client
 }
@@ -150,30 +157,36 @@ func (m Model) fetchHealth() tea.Msg {
 func (m Model) fetchLogs(id string) tea.Cmd {
 	logTab := m.selectedLogTab
 	client := m.client
+	verbose := m.verboseLevel
 	return func() tea.Msg {
-		var content string
-		var err error
 		switch logTab {
 		case tabSessions:
-			content, err = client.FetchSessionHistory(id, 200)
-		case tabHistory:
-			content, err = client.ReadTranscript(id)
-		default:
-			content, err = client.FetchProcessLog(id, 200)
-		}
-		if err != nil {
-			kinds := []string{"sessions", "processes", "history"}
-			kind := "unknown"
-			if logTab >= 0 && logTab < len(kinds) {
-				kind = kinds[logTab]
+			msgs, err := client.FetchSessionMessages(id, 200)
+			if err != nil {
+				return errMsg{fmt.Errorf("sessions(%s): %w", id, err)}
 			}
-			return errMsg{fmt.Errorf("%s(%s): %w", kind, id, err)}
+			content := data.FormatHistory(msgs, verbose)
+			content = cleanLogContent(content)
+			query := extractQuery(content)
+			return logsMsg{content: content, query: query, messages: msgs, logTab: logTab}
+		case tabHistory:
+			// For transcripts, read raw but also parse messages
+			content, err := client.ReadTranscriptVerbose(id, verbose)
+			if err != nil {
+				return errMsg{fmt.Errorf("history(%s): %w", id, err)}
+			}
+			content = cleanLogContent(content)
+			query := extractQuery(content)
+			return logsMsg{content: content, query: query, logTab: logTab}
+		default:
+			content, err := client.FetchProcessLog(id, 200)
+			if err != nil {
+				return errMsg{fmt.Errorf("processes(%s): %w", id, err)}
+			}
+			content = cleanLogContent(content)
+			query := extractQuery(content)
+			return logsMsg{content: content, query: query, logTab: logTab}
 		}
-		// Clean up Docker progress bars and carriage returns
-		content = cleanLogContent(content)
-		// Extract query from content
-		query := extractQuery(content)
-		return logsMsg{content: content, query: query}
 	}
 }
 
@@ -261,6 +274,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logsMsg:
 		m.logContent = msg.content
 		m.currentQuery = msg.query
+		m.cachedMessages = msg.messages
+		m.cachedLogTab = msg.logTab
 		if m.logFollow {
 			// Set to max int; renderLogPanel will clamp it
 			m.logScrollPos = 999999
@@ -486,6 +501,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.logFollow = !m.logFollow
 		if m.logFollow {
 			m.logScrollPos = 999999
+		}
+		return *m, nil
+
+	case key.Matches(msg, keys.Verbose):
+		m.verboseLevel = m.verboseLevel.Next()
+		// Re-render cached messages if we have them
+		if len(m.cachedMessages) > 0 && m.selectedLogTab != tabProcesses {
+			m.logContent = data.FormatHistory(m.cachedMessages, m.verboseLevel)
+			if m.logFollow {
+				m.logScrollPos = 999999
+			}
 		}
 		return *m, nil
 
@@ -1043,7 +1069,8 @@ func (m Model) renderStatusBar() string {
 	left := strings.Join(leftParts, " ")
 
 	// Right: keybindings help
-	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  /:search  f:follow  q:quit")
+	verboseTag := dimStyle.Render(fmt.Sprintf("v:verbose(%s)", m.verboseLevel))
+	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  /:search  f:follow  ") + verboseTag + dimStyle.Render("  q:quit")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

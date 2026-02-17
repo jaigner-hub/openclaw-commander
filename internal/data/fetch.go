@@ -200,6 +200,15 @@ func (c *Client) FetchProcessLog(sessionID string, limit int) (string, error) {
 
 // FetchSessionHistory calls sessions_history for a given session key.
 func (c *Client) FetchSessionHistory(sessionKey string, limit int) (string, error) {
+	msgs, err := c.FetchSessionMessages(sessionKey, limit)
+	if err != nil {
+		return "", err
+	}
+	return FormatHistory(msgs, VerboseSummary), nil
+}
+
+// FetchSessionMessages returns parsed history messages.
+func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMessage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -212,57 +221,235 @@ func (c *Client) FetchSessionHistory(sessionKey string, limit int) (string, erro
 		},
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var resp APIResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("parse history response: %w", err)
+		return nil, fmt.Errorf("parse history response: %w", err)
 	}
 	if !resp.OK {
-		return "", fmt.Errorf("sessions_history: API returned ok=false")
+		return nil, fmt.Errorf("sessions_history: API returned ok=false")
 	}
 
-	// Result has a "details" object with the parsed data
 	var outer struct {
 		Details json.RawMessage `json:"details"`
 	}
 	if err := json.Unmarshal(resp.Result, &outer); err != nil {
-		return "", fmt.Errorf("parse history result: %w", err)
+		return nil, fmt.Errorf("parse history result: %w", err)
 	}
 
 	var result struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(outer.Details, &result); err != nil {
+		return nil, fmt.Errorf("parse history details: %w", err)
+	}
+
+	var msgs []HistoryMessage
+	for _, raw := range result.Messages {
+		var base struct {
+			Role     string `json:"role"`
+			Model    string `json:"model,omitempty"`
+			Content  []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
-			Model     string `json:"model,omitempty"`
-			Timestamp int64  `json:"timestamp,omitempty"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(outer.Details, &result); err != nil {
-		return "", fmt.Errorf("parse history details: %w", err)
-	}
-
-	var sb strings.Builder
-	for _, msg := range result.Messages {
-		role := strings.ToUpper(msg.Role)
-		sb.WriteString(fmt.Sprintf("─── %s ", role))
-		if msg.Model != "" {
-			sb.WriteString(fmt.Sprintf("(%s) ", msg.Model))
+			ToolName   string `json:"toolName,omitempty"`
+			ToolCallId string `json:"toolCallId,omitempty"`
+			IsError    bool   `json:"isError,omitempty"`
+			Timestamp  int64  `json:"timestamp,omitempty"`
 		}
-		sb.WriteString("───\n")
-		for _, c := range msg.Content {
+		if json.Unmarshal(raw, &base) != nil {
+			continue
+		}
+
+		var text strings.Builder
+		for _, c := range base.Content {
 			if c.Type == "text" && c.Text != "" {
-				sb.WriteString(c.Text)
-				sb.WriteString("\n")
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(c.Text)
 			}
 		}
-		sb.WriteString("\n")
+
+		msg := HistoryMessage{
+			Role:      base.Role,
+			Model:     base.Model,
+			Text:      text.String(),
+			Timestamp: base.Timestamp,
+		}
+
+		if base.Role == "toolResult" || base.Role == "toolUse" || base.Role == "tool" {
+			msg.ToolName = base.ToolName
+			msg.ToolError = base.IsError
+			msg.ToolArgs = extractToolArgs(raw)
+		}
+
+		msgs = append(msgs, msg)
 	}
-	return sb.String(), nil
+	return msgs, nil
+}
+
+// extractToolArgs tries to get a short summary of tool arguments.
+func extractToolArgs(raw json.RawMessage) string {
+	var entry struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		// toolUse has args directly
+		Args json.RawMessage `json:"args,omitempty"`
+		// Some have input
+		Input json.RawMessage `json:"input,omitempty"`
+	}
+	if json.Unmarshal(raw, &entry) != nil {
+		return ""
+	}
+
+	// Try args first (toolUse), then input
+	argsRaw := entry.Args
+	if len(argsRaw) == 0 {
+		argsRaw = entry.Input
+	}
+	if len(argsRaw) == 0 {
+		return ""
+	}
+
+	var args map[string]interface{}
+	if json.Unmarshal(argsRaw, &args) != nil {
+		return ""
+	}
+
+	// Build a short summary from args
+	var parts []string
+	// Prioritize common fields
+	for _, key := range []string{"command", "file_path", "path", "query", "url", "action", "tool"} {
+		if v, ok := args[key]; ok {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 50 {
+				s = s[:47] + "..."
+			}
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		// Fallback: just show first value
+		for _, v := range args {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 50 {
+				s = s[:47] + "..."
+			}
+			parts = append(parts, s)
+			break
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// toolEmoji returns an emoji for a tool name.
+func toolEmoji(name string) string {
+	switch strings.ToLower(name) {
+	case "read", "file_read":
+		return "📖"
+	case "write", "file_write":
+		return "✍️"
+	case "edit", "file_edit":
+		return "✏️"
+	case "exec", "bash", "shell":
+		return "🛠️"
+	case "web_search", "search":
+		return "🔎"
+	case "web_fetch", "fetch":
+		return "🌐"
+	case "browser":
+		return "🖥️"
+	case "message":
+		return "💬"
+	case "image":
+		return "🖼️"
+	case "tts":
+		return "🔊"
+	case "process":
+		return "⚙️"
+	case "nodes":
+		return "📱"
+	case "canvas":
+		return "🎨"
+	default:
+		return "🔧"
+	}
+}
+
+// FormatHistory renders messages according to the verbose level.
+func FormatHistory(msgs []HistoryMessage, verbose VerboseLevel) string {
+	var sb strings.Builder
+	for _, msg := range msgs {
+		switch msg.Role {
+		case "toolResult", "toolUse", "tool":
+			switch verbose {
+			case VerboseOff:
+				continue
+			case VerboseSummary:
+				name := msg.ToolName
+				if name == "" {
+					name = "tool"
+				}
+				emoji := toolEmoji(name)
+				status := "✓"
+				if msg.ToolError {
+					status = "✗"
+				}
+				if msg.Role == "toolUse" {
+					// toolUse is the call, show args
+					line := fmt.Sprintf(" %s %s %s", emoji, name, msg.ToolArgs)
+					sb.WriteString(line + "\n")
+					continue
+				}
+				// toolResult — show status
+				line := fmt.Sprintf(" %s %s %s  %s", status, emoji, name, msg.ToolArgs)
+				sb.WriteString(line + "\n")
+				if msg.ToolError && msg.Text != "" {
+					// Auto-expand: show first 6 lines of error
+					errLines := strings.Split(msg.Text, "\n")
+					limit := 6
+					if len(errLines) < limit {
+						limit = len(errLines)
+					}
+					for _, el := range errLines[:limit] {
+						sb.WriteString("   " + el + "\n")
+					}
+					if len(errLines) > 6 {
+						sb.WriteString("   …\n")
+					}
+				}
+			case VerboseFull:
+				role := strings.ToUpper(msg.Role)
+				name := msg.ToolName
+				if name != "" {
+					role = role + " (" + name + ")"
+				}
+				sb.WriteString(fmt.Sprintf("─── %s ───\n", role))
+				if msg.Text != "" {
+					sb.WriteString(msg.Text + "\n")
+				}
+				sb.WriteString("\n")
+			}
+		default:
+			role := strings.ToUpper(msg.Role)
+			sb.WriteString(fmt.Sprintf("─── %s ", role))
+			if msg.Model != "" {
+				sb.WriteString(fmt.Sprintf("(%s) ", msg.Model))
+			}
+			sb.WriteString("───\n")
+			if msg.Text != "" {
+				sb.WriteString(msg.Text + "\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
 }
 
 // SendMessage sends a message to a session via `openclaw agent`.
@@ -384,16 +571,22 @@ func readTranscriptLabel(path string) string {
 
 // ReadTranscript reads a full transcript file and formats it for display.
 func (c *Client) ReadTranscript(path string) (string, error) {
+	return c.ReadTranscriptVerbose(path, VerboseSummary)
+}
+
+// ReadTranscriptVerbose reads a transcript with the given verbose level.
+func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 
-	var sb strings.Builder
+	var msgs []HistoryMessage
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 	for scanner.Scan() {
+		line := scanner.Bytes()
 		var entry struct {
 			Type    string `json:"type"`
 			Message struct {
@@ -402,57 +595,62 @@ func (c *Client) ReadTranscript(path string) (string, error) {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
+				ToolName string `json:"toolName,omitempty"`
+				IsError  bool   `json:"isError,omitempty"`
 			} `json:"message"`
-			// Also support flat role/content (API responses format)
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
-			Model string `json:"model,omitempty"`
+			Model    string `json:"model,omitempty"`
+			ToolName string `json:"toolName,omitempty"`
+			IsError  bool   `json:"isError,omitempty"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+		if json.Unmarshal(line, &entry) != nil {
 			continue
 		}
 
-		// Determine role and content - try nested .message first, then flat
 		role := entry.Message.Role
 		content := entry.Message.Content
+		toolName := entry.Message.ToolName
+		isError := entry.Message.IsError
 		if role == "" {
 			role = entry.Role
 			content = entry.Content
+			toolName = entry.ToolName
+			isError = entry.IsError
 		}
 
-		// Skip non-message entries (session, model_change, custom, etc.)
 		if role == "" || (entry.Type != "" && entry.Type != "message") {
 			continue
 		}
 
-		hasText := false
+		var text strings.Builder
 		for _, c := range content {
 			if c.Type == "text" && c.Text != "" {
-				hasText = true
-				break
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(c.Text)
 			}
-		}
-		if !hasText {
-			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("─── %s ", strings.ToUpper(role)))
-		if entry.Model != "" {
-			sb.WriteString(fmt.Sprintf("(%s) ", entry.Model))
+		msg := HistoryMessage{
+			Role:  role,
+			Model: entry.Model,
+			Text:  text.String(),
 		}
-		sb.WriteString("───\n")
-		for _, c := range content {
-			if c.Type == "text" && c.Text != "" {
-				sb.WriteString(c.Text)
-				sb.WriteString("\n")
-			}
+
+		if role == "toolResult" || role == "toolUse" || role == "tool" {
+			msg.ToolName = toolName
+			msg.ToolError = isError
+			msg.ToolArgs = extractToolArgs(line)
 		}
-		sb.WriteString("\n")
+
+		msgs = append(msgs, msg)
 	}
-	return sb.String(), nil
+	return FormatHistory(msgs, verbose), nil
 }
 
 func homeDir() string {

@@ -22,6 +22,7 @@ type keyMap struct {
 	ConfirmN key.Binding
 	Escape   key.Binding
 	Message  key.Binding
+	Verbose  key.Binding
 }
 
 var keys = keyMap{
@@ -100,5 +101,9 @@ var keys = keyMap{
 	Message: key.NewBinding(
 		key.WithKeys("m"),
 		key.WithHelp("m", "message"),
+	),
+	Verbose: key.NewBinding(
+		key.WithKeys("v"),
+		key.WithHelp("v", "verbose"),
 	),
 }
