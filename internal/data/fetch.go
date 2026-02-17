@@ -318,17 +318,35 @@ func readTranscriptLabel(path string) string {
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	for scanner.Scan() {
 		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Role == "user" {
-			for _, c := range entry.Content {
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			continue
+		}
+
+		role := entry.Message.Role
+		content := entry.Message.Content
+		if role == "" {
+			role = entry.Role
+			content = entry.Content
+		}
+
+		if role == "user" {
+			for _, c := range content {
 				if c.Type == "text" && c.Text != "" {
 					text := c.Text
-					// Trim to first line, max 60 chars
 					if idx := strings.IndexByte(text, '\n'); idx > 0 {
 						text = text[:idx]
 					}
@@ -356,11 +374,19 @@ func (c *Client) ReadTranscript(path string) (string, error) {
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 	for scanner.Scan() {
 		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+			// Also support flat role/content (API responses format)
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
-				Name string `json:"name,omitempty"`
 			} `json:"content"`
 			Model string `json:"model,omitempty"`
 		}
@@ -368,13 +394,36 @@ func (c *Client) ReadTranscript(path string) (string, error) {
 			continue
 		}
 
-		role := strings.ToUpper(entry.Role)
-		sb.WriteString(fmt.Sprintf("─── %s ", role))
+		// Determine role and content - try nested .message first, then flat
+		role := entry.Message.Role
+		content := entry.Message.Content
+		if role == "" {
+			role = entry.Role
+			content = entry.Content
+		}
+
+		// Skip non-message entries (session, model_change, custom, etc.)
+		if role == "" || (entry.Type != "" && entry.Type != "message") {
+			continue
+		}
+
+		hasText := false
+		for _, c := range content {
+			if c.Type == "text" && c.Text != "" {
+				hasText = true
+				break
+			}
+		}
+		if !hasText {
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf("─── %s ", strings.ToUpper(role)))
 		if entry.Model != "" {
 			sb.WriteString(fmt.Sprintf("(%s) ", entry.Model))
 		}
 		sb.WriteString("───\n")
-		for _, c := range entry.Content {
+		for _, c := range content {
 			if c.Type == "text" && c.Text != "" {
 				sb.WriteString(c.Text)
 				sb.WriteString("\n")
