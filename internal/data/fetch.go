@@ -38,39 +38,61 @@ func (c *Client) FetchSessions() ([]Session, error) {
 	return result.Details.Sessions, nil
 }
 
-// FetchProcesses tries the gateway API for process list.
-// Falls back gracefully if the tool isn't available.
+// FetchProcesses scans for running openclaw-related processes via ps.
 func (c *Client) FetchProcesses() ([]Process, error) {
-	body, err := c.invoke(toolRequest{
-		Tool: "process",
-		Args: map[string]interface{}{"action": "list"},
-	})
+	// Find claude, openclaw agent, and other relevant child processes
+	out, err := exec.Command("ps", "axo", "pid,etime,command").Output()
 	if err != nil {
-		// Tool not available via HTTP — return empty, no error
 		return nil, nil
 	}
 
-	var resp APIResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil
-	}
-	if !resp.OK {
-		return nil, nil
-	}
+	var procs []Process
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
 
-	var result TextResult
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, nil
-	}
+		// Match relevant processes
+		isRelevant := strings.Contains(lower, "claude") ||
+			strings.Contains(lower, "openclaw") ||
+			strings.Contains(lower, "oclaw-tui")
 
-	var text string
-	for _, c := range result.Content {
-		if c.Type == "text" {
-			text += c.Text
+		if !isRelevant {
+			continue
 		}
+
+		// Skip browser tabs, header, grep, ps itself
+		if strings.Contains(lower, "chrome") || strings.Contains(lower, "chromium") ||
+			strings.Contains(lower, "firefox") || strings.Contains(lower, "electron") ||
+			strings.HasPrefix(line, "PID") || strings.Contains(line, "ps axo") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+
+		pid := fields[0]
+		etime := fields[1]
+		cmd := strings.Join(fields[2:], " ")
+
+		// Shorten command for display
+		if len(cmd) > 60 {
+			cmd = cmd[:57] + "..."
+		}
+
+		status := "running"
+		name := "pid:" + pid
+
+		procs = append(procs, Process{
+			SessionName: name,
+			Status:      status,
+			Runtime:     etime,
+			Command:     cmd,
+		})
 	}
 
-	return parseProcessList(text), nil
+	return procs, nil
 }
 
 // parseProcessList parses the text table from the process list API.
