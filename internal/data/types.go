@@ -68,3 +68,12 @@ type SessionsListResult struct {
 		Sessions []Session `json:"sessions"`
 	} `json:"details"`
 }
+
+// ArchivedRun represents a completed sub-agent run with a transcript on disk.
+type ArchivedRun struct {
+	SessionID  string
+	Label      string
+	Size       int64
+	ModifiedAt int64
+	Path       string
+}

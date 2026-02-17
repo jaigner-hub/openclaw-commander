@@ -13,6 +13,7 @@ type keyMap struct {
 	Follow   key.Binding
 	Tab1     key.Binding
 	Tab2     key.Binding
+	Tab3     key.Binding
 	ConfirmY key.Binding
 	ConfirmN key.Binding
 	Escape   key.Binding
@@ -59,6 +60,10 @@ var keys = keyMap{
 	Tab2: key.NewBinding(
 		key.WithKeys("2"),
 		key.WithHelp("2", "processes"),
+	),
+	Tab3: key.NewBinding(
+		key.WithKeys("3"),
+		key.WithHelp("3", "history"),
 	),
 	ConfirmY: key.NewBinding(
 		key.WithKeys("y"),

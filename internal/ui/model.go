@@ -17,6 +17,7 @@ import (
 const (
 	tabSessions  = 0
 	tabProcesses = 1
+	tabHistory   = 2
 
 	panelList = 0
 	panelLogs = 1
@@ -36,6 +37,7 @@ type healthMsg struct{ health *data.GatewayHealth }
 type errMsg struct{ err error }
 type agentReplyMsg struct{ reply string }
 type agentSendingMsg struct{}
+type archivedMsg struct{ runs []data.ArchivedRun }
 
 // Model is the main Bubble Tea model.
 type Model struct {
@@ -47,10 +49,12 @@ type Model struct {
 
 	sessions  []data.Session
 	processes []data.Process
+	archived  []data.ArchivedRun
 	health    *data.GatewayHealth
 
 	sessionCursor int
 	processCursor int
+	historyCursor  int
 	logContent    string
 	logFollow     bool
 	logScrollPos  int
@@ -124,6 +128,14 @@ func (m Model) fetchProcesses() tea.Msg {
 	return processesMsg{p}
 }
 
+func (m Model) fetchArchived() tea.Msg {
+	runs, err := m.client.FetchArchivedRuns(m.sessions)
+	if err != nil {
+		return errMsg{fmt.Errorf("archived: %w", err)}
+	}
+	return archivedMsg{runs}
+}
+
 func (m Model) fetchHealth() tea.Msg {
 	h, err := m.client.FetchGatewayHealth()
 	if err != nil {
@@ -133,19 +145,24 @@ func (m Model) fetchHealth() tea.Msg {
 }
 
 func (m Model) fetchLogs(id string) tea.Cmd {
-	isSession := m.selectedLogTab == tabSessions
+	logTab := m.selectedLogTab
+	client := m.client
 	return func() tea.Msg {
 		var content string
 		var err error
-		if isSession {
-			content, err = m.client.FetchSessionHistory(id, 200)
-		} else {
-			content, err = m.client.FetchProcessLog(id, 200)
+		switch logTab {
+		case tabSessions:
+			content, err = client.FetchSessionHistory(id, 200)
+		case tabHistory:
+			content, err = client.ReadTranscript(id)
+		default:
+			content, err = client.FetchProcessLog(id, 200)
 		}
 		if err != nil {
-			kind := "process-log"
-			if isSession {
-				kind = "session-history"
+			kinds := []string{"sessions", "processes", "history"}
+			kind := "unknown"
+			if logTab >= 0 && logTab < len(kinds) {
+				kind = kinds[logTab]
 			}
 			return errMsg{fmt.Errorf("%s(%s): %w", kind, id, err)}
 		}
@@ -191,6 +208,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		m.sessions = msg.sessions
 		m.lastError = ""
+		return m, m.fetchArchived
+
+	case archivedMsg:
+		m.archived = msg.runs
 		return m, nil
 
 	case processesMsg:
@@ -351,6 +372,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeTab = tabProcesses
 		return m, nil
 
+	case key.Matches(msg, keys.Tab3):
+		m.activeTab = tabHistory
+		return m, nil
+
 	case key.Matches(msg, keys.Enter):
 		id := m.selectedItemID()
 		if id != "" {
@@ -427,25 +452,36 @@ func (m *Model) moveCursor(delta int) {
 }
 
 func (m Model) currentCursor() int {
-	if m.activeTab == tabSessions {
+	switch m.activeTab {
+	case tabSessions:
 		return m.sessionCursor
+	case tabHistory:
+		return m.historyCursor
+	default:
+		return m.processCursor
 	}
-	return m.processCursor
 }
 
 func (m *Model) setCursor(v int) {
-	if m.activeTab == tabSessions {
+	switch m.activeTab {
+	case tabSessions:
 		m.sessionCursor = v
-	} else {
+	case tabHistory:
+		m.historyCursor = v
+	default:
 		m.processCursor = v
 	}
 }
 
 func (m Model) filteredListLen() int {
-	if m.activeTab == tabSessions {
+	switch m.activeTab {
+	case tabSessions:
 		return len(m.filteredSessions())
+	case tabHistory:
+		return len(m.filteredArchived())
+	default:
+		return len(m.filteredProcesses())
 	}
-	return len(m.filteredProcesses())
 }
 
 func (m Model) filteredSessions() []data.Session {
@@ -481,13 +517,34 @@ func (m Model) filteredProcesses() []data.Process {
 	return out
 }
 
+func (m Model) filteredArchived() []data.ArchivedRun {
+	if m.filter == "" {
+		return m.archived
+	}
+	var out []data.ArchivedRun
+	f := strings.ToLower(m.filter)
+	for _, a := range m.archived {
+		if strings.Contains(strings.ToLower(a.Label), f) ||
+			strings.Contains(strings.ToLower(a.SessionID), f) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (m Model) selectedItemID() string {
-	if m.activeTab == tabSessions {
+	switch m.activeTab {
+	case tabSessions:
 		ss := m.filteredSessions()
 		if m.sessionCursor < len(ss) {
 			return ss[m.sessionCursor].Key
 		}
-	} else {
+	case tabHistory:
+		aa := m.filteredArchived()
+		if m.historyCursor < len(aa) {
+			return aa[m.historyCursor].Path // use path as ID for transcripts
+		}
+	default:
 		pp := m.filteredProcesses()
 		if m.processCursor < len(pp) {
 			return pp[m.processCursor].SessionName
@@ -548,12 +605,16 @@ func (m Model) renderListPanel(width, height int) string {
 	// Tabs
 	tab1 := inactiveTabStyle.Render("1:Sessions")
 	tab2 := inactiveTabStyle.Render("2:Processes")
-	if m.activeTab == tabSessions {
+	tab3 := inactiveTabStyle.Render("3:History")
+	switch m.activeTab {
+	case tabSessions:
 		tab1 = activeTabStyle.Render("1:Sessions")
-	} else {
+	case tabProcesses:
 		tab2 = activeTabStyle.Render("2:Processes")
+	case tabHistory:
+		tab3 = activeTabStyle.Render("3:History")
 	}
-	b.WriteString(tab1 + " " + tab2 + "\n")
+	b.WriteString(tab1 + " " + tab2 + " " + tab3 + "\n")
 
 	// Search bar
 	if m.searching {
@@ -564,10 +625,13 @@ func (m Model) renderListPanel(width, height int) string {
 		b.WriteString("\n")
 	}
 
-	if m.activeTab == tabSessions {
+	switch m.activeTab {
+	case tabSessions:
 		b.WriteString(m.renderSessionList(width, height-3))
-	} else {
+	case tabProcesses:
 		b.WriteString(m.renderProcessList(width, height-3))
+	case tabHistory:
+		b.WriteString(m.renderHistoryList(width, height-3))
 	}
 
 	return b.String()
@@ -714,6 +778,51 @@ func (m Model) renderProcessList(width, maxItems int) string {
 	return b.String()
 }
 
+func (m Model) renderHistoryList(width, maxItems int) string {
+	runs := m.filteredArchived()
+	if len(runs) == 0 {
+		return dimStyle.Render("  No archived runs found")
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf(" History (%d runs)", len(runs))) + "\n")
+
+	count := 0
+	for i, r := range runs {
+		if count >= maxItems-1 {
+			break
+		}
+
+		age := time.Since(time.UnixMilli(r.ModifiedAt))
+		ageStr := formatDuration(age)
+		sizeStr := fmt.Sprintf("%dK", r.Size/1024)
+
+		label := r.Label
+		if label == "" {
+			label = r.SessionID[:12]
+		}
+		if len(label) > 30 {
+			label = label[:27] + "..."
+		}
+
+		prefix := "  "
+		if i == m.historyCursor {
+			prefix = "▸ "
+		}
+
+		line := fmt.Sprintf("%s📋 %-30s %5s %5s", prefix, label, dimStyle.Render(sizeStr), dimStyle.Render(ageStr))
+
+		if i == m.historyCursor {
+			line = selectedStyle.Render(line)
+		}
+
+		b.WriteString(line + "\n")
+		count++
+	}
+
+	return b.String()
+}
+
 func (m Model) renderLogPanel(width, height int) string {
 	var b strings.Builder
 
@@ -808,7 +917,7 @@ func (m Model) renderStatusBar() string {
 	left := strings.Join(leftParts, " ")
 
 	// Right: keybindings help
-	right := dimStyle.Render("\u2191\u2193:nav  tab:panel  1/2:tab  \u21b5:logs  m:msg  x:kill  /:search  f:follow  q:quit")
+	right := dimStyle.Render("\u2191\u2193:nav  tab:panel  1/2/3:tab  \u21b5:view  m:msg  /:search  f:follow  q:quit")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

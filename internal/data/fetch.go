@@ -1,10 +1,14 @@
 package data
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -228,6 +232,140 @@ func (c *Client) SendMessage(sessionID, message string) (string, error) {
 		return "", fmt.Errorf("openclaw agent: %s", string(out))
 	}
 	return string(out), nil
+}
+
+// FetchArchivedRuns finds transcript files that aren't in the active sessions list.
+// These are typically completed/cleaned-up sub-agent runs.
+func (c *Client) FetchArchivedRuns(activeSessions []Session) ([]ArchivedRun, error) {
+	sessDir := filepath.Join(homeDir(), ".openclaw", "agents", "main", "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		return nil, nil // graceful if dir doesn't exist
+	}
+
+	// Build set of active session IDs
+	activeIDs := make(map[string]bool)
+	for _, s := range activeSessions {
+		activeIDs[s.SessionID] = true
+	}
+
+	var runs []ArchivedRun
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		sessionID := strings.TrimSuffix(e.Name(), ".jsonl")
+		if activeIDs[sessionID] {
+			continue // skip active sessions
+		}
+
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+
+		// Try to read first line to get a label
+		label := readTranscriptLabel(filepath.Join(sessDir, e.Name()))
+
+		runs = append(runs, ArchivedRun{
+			SessionID:  sessionID,
+			Label:      label,
+			Size:       info.Size(),
+			ModifiedAt: info.ModTime().UnixMilli(),
+			Path:       filepath.Join(sessDir, e.Name()),
+		})
+	}
+
+	// Sort by modified time, newest first
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].ModifiedAt > runs[j].ModifiedAt
+	})
+
+	return runs, nil
+}
+
+// readTranscriptLabel reads the first user message from a transcript to use as a label.
+func readTranscriptLabel(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+	for scanner.Scan() {
+		var entry struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Role == "user" {
+			for _, c := range entry.Content {
+				if c.Type == "text" && c.Text != "" {
+					text := c.Text
+					// Trim to first line, max 60 chars
+					if idx := strings.IndexByte(text, '\n'); idx > 0 {
+						text = text[:idx]
+					}
+					if len(text) > 60 {
+						text = text[:57] + "..."
+					}
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// ReadTranscript reads a full transcript file and formats it for display.
+func (c *Client) ReadTranscript(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var sb strings.Builder
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var entry struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+				Name string `json:"name,omitempty"`
+			} `json:"content"`
+			Model string `json:"model,omitempty"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			continue
+		}
+
+		role := strings.ToUpper(entry.Role)
+		sb.WriteString(fmt.Sprintf("─── %s ", role))
+		if entry.Model != "" {
+			sb.WriteString(fmt.Sprintf("(%s) ", entry.Model))
+		}
+		sb.WriteString("───\n")
+		for _, c := range entry.Content {
+			if c.Type == "text" && c.Text != "" {
+				sb.WriteString(c.Text)
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), nil
+}
+
+func homeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
 }
 
 // FetchGatewayHealth does a simple GET to the gateway root to check connectivity.
