@@ -363,6 +363,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activePanel = (m.activePanel + 1) % 2
 		return m, nil
 
+	case key.Matches(msg, keys.Left):
+		m.activePanel = panelList
+		return m, nil
+
+	case key.Matches(msg, keys.Right):
+		m.activePanel = panelLogs
+		return m, nil
+
+	case key.Matches(msg, keys.Escape):
+		if m.activePanel == panelLogs {
+			m.activePanel = panelList
+			return m, nil
+		}
+		return m, nil
+
 	case key.Matches(msg, keys.Tab1):
 		m.activeTab = tabSessions
 		return m, nil
@@ -924,7 +939,7 @@ func (m Model) renderStatusBar() string {
 	left := strings.Join(leftParts, " ")
 
 	// Right: keybindings help
-	right := dimStyle.Render("\u2191\u2193:nav  tab:panel  1/2/3:tab  \u21b5:view  m:msg  /:search  f:follow  q:quit")
+	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  /:search  f:follow  q:quit")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
