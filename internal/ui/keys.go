@@ -5,6 +5,8 @@ import "github.com/charmbracelet/bubbles/key"
 type keyMap struct {
 	Up       key.Binding
 	Down     key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
 	Left     key.Binding
 	Right    key.Binding
 	Tab      key.Binding
@@ -25,19 +27,27 @@ type keyMap struct {
 var keys = keyMap{
 	Up: key.NewBinding(
 		key.WithKeys("up", "k"),
-		key.WithHelp("\u2191/k", "up"),
+		key.WithHelp("↑/k", "up"),
 	),
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
-		key.WithHelp("\u2193/j", "down"),
+		key.WithHelp("↓/j", "down"),
+	),
+	PageUp: key.NewBinding(
+		key.WithKeys("pgup", "ctrl+u"),
+		key.WithHelp("pgup", "page up"),
+	),
+	PageDown: key.NewBinding(
+		key.WithKeys("pgdown", "ctrl+d"),
+		key.WithHelp("pgdown", "page down"),
 	),
 	Left: key.NewBinding(
 		key.WithKeys("left", "h"),
-		key.WithHelp("\u2190/h", "list panel"),
+		key.WithHelp("←/h", "list panel"),
 	),
 	Right: key.NewBinding(
 		key.WithKeys("right", "l"),
-		key.WithHelp("\u2192/l", "log panel"),
+		key.WithHelp("→/l", "log panel"),
 	),
 	Tab: key.NewBinding(
 		key.WithKeys("tab"),
@@ -45,7 +55,7 @@ var keys = keyMap{
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
-		key.WithHelp("\u21b5", "select"),
+		key.WithHelp("↵", "select"),
 	),
 	Kill: key.NewBinding(
 		key.WithKeys("x"),

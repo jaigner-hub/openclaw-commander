@@ -36,6 +36,10 @@ var (
 			Foreground(colorAccent).
 			Bold(true)
 
+	queryStyle = lipgloss.NewStyle().
+			Foreground(colorYellow).
+			Italic(true)
+
 	// Status colors
 	statusRunning  = lipgloss.NewStyle().Foreground(colorGreen)
 	statusThinking = lipgloss.NewStyle().Foreground(colorYellow)

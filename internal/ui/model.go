@@ -32,7 +32,7 @@ type tickHealthMsg struct{}
 // Data messages
 type sessionsMsg struct{ sessions []data.Session }
 type processesMsg struct{ processes []data.Process }
-type logsMsg struct{ content string }
+type logsMsg struct{ content string; query string }
 type healthMsg struct{ health *data.GatewayHealth }
 type errMsg struct{ err error }
 type agentReplyMsg struct{ reply string }
@@ -60,6 +60,9 @@ type Model struct {
 	logScrollPos  int
 	selectedLogID  string
 	selectedLogTab int // which tab the selected log came from
+
+	// Current query display
+	currentQuery string
 
 	// Search/filter
 	searching   bool
@@ -168,7 +171,9 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 		}
 		// Clean up Docker progress bars and carriage returns
 		content = cleanLogContent(content)
-		return logsMsg{content}
+		// Extract query from content
+		query := extractQuery(content)
+		return logsMsg{content: content, query: query}
 	}
 }
 
@@ -179,6 +184,29 @@ func cleanLogContent(content string) string {
 	// Replace standalone carriage returns (Docker progress bars)
 	content = strings.ReplaceAll(content, "\r", "\n")
 	return content
+}
+
+// extractQuery finds the first user message in the log content
+func extractQuery(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		// Look for user message markers
+		if strings.Contains(line, "USER") || strings.Contains(line, "user:") || strings.Contains(line, "[user]") {
+			// Return the next line or the rest of this line
+			if i+1 < len(lines) {
+				nextLine := strings.TrimSpace(lines[i+1])
+				if nextLine != "" && !strings.HasPrefix(nextLine, "—") {
+					return nextLine
+				}
+			}
+			// Try to extract from current line
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return ""
 }
 
 // Tick commands for periodic refresh
@@ -232,6 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logsMsg:
 		m.logContent = msg.content
+		m.currentQuery = msg.query
 		if m.logFollow {
 			// Set to max int; renderLogPanel will clamp it
 			m.logScrollPos = 999999
@@ -367,6 +396,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveCursor(1)
 		} else {
 			m.logScrollPos++
+			m.logFollow = false
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.PageUp):
+		if m.activePanel == panelLogs {
+			pageSize := 10 // Fixed page size
+			m.logScrollPos = max(0, m.logScrollPos-pageSize)
+			m.logFollow = false
+		}
+		return m, nil
+
+	case key.Matches(msg, keys.PageDown):
+		if m.activePanel == panelLogs {
+			pageSize := 10 // Fixed page size
+			m.logScrollPos += pageSize
 			m.logFollow = false
 		}
 		return m, nil
@@ -853,7 +898,7 @@ func (m Model) renderHistoryList(width, maxItems int) string {
 func (m Model) renderLogPanel(width, height int) string {
 	var b strings.Builder
 
-	// Title
+	// Title with current query
 	logTitle := "Logs"
 	if m.selectedLogID != "" {
 		logTitle = "Logs: " + m.selectedLogID
@@ -863,6 +908,16 @@ func (m Model) renderLogPanel(width, height int) string {
 		followTag = statusRunning.Render(" [follow]")
 	}
 	b.WriteString(titleStyle.Render(logTitle) + followTag + "\n")
+
+	// Show current query if available
+	if m.currentQuery != "" {
+		queryText := m.currentQuery
+		if len(queryText) > width-10 {
+			queryText = queryText[:width-13] + "..."
+		}
+		b.WriteString(dimStyle.Render("Query: ") + queryStyle.Render(queryText) + "\n")
+	}
+
 	b.WriteString(dimStyle.Render(strings.Repeat("\u2500", min(width, 40))) + "\n")
 
 	if m.logContent == "" {
@@ -884,6 +939,9 @@ func (m Model) renderLogPanel(width, height int) string {
 	}
 
 	viewH := height - 3
+	if m.currentQuery != "" {
+		viewH-- // Account for query line
+	}
 	if viewH < 1 {
 		viewH = 1
 	}
