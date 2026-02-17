@@ -242,7 +242,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		return (&m).handleKey(msg)
 
 	case sessionsMsg:
 		m.sessions = msg.sessions
@@ -310,7 +310,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// Handle search input mode
 	if m.searching {
 		switch {
@@ -318,16 +318,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.searching = false
 			m.filter = ""
 			m.searchInput.SetValue("")
-			return m, nil
+			return *m, nil
 		case key.Matches(msg, keys.Enter):
 			m.searching = false
 			m.filter = m.searchInput.Value()
-			return m, nil
+			return *m, nil
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
 			m.filter = m.searchInput.Value()
-			return m, cmd
+			return *m, cmd
 		}
 	}
 
@@ -337,18 +337,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case key.Matches(msg, keys.Escape):
 			m.messaging = false
 			m.msgInput.SetValue("")
-			return m, nil
+			return *m, nil
 		case key.Matches(msg, keys.Enter):
 			text := m.msgInput.Value()
 			if text == "" {
 				m.messaging = false
-				return m, nil
+				return *m, nil
 			}
 			m.messaging = false
 			m.sending = true
 			m.msgInput.SetValue("")
 			sessionID := m.msgTarget
-			return m, func() tea.Msg {
+			return *m, func() tea.Msg {
 				reply, err := m.client.SendMessage(sessionID, text)
 				if err != nil {
 					return errMsg{fmt.Errorf("send: %w", err)}
@@ -358,7 +358,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.msgInput, cmd = m.msgInput.Update(msg)
-			return m, cmd
+			return *m, cmd
 		}
 	}
 
@@ -369,18 +369,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.confirming = false
 			target := m.confirmTarget
 			m.confirmTarget = ""
-			return m, killProcess(target)
+			return *m, killProcess(target)
 		case key.Matches(msg, keys.ConfirmN), key.Matches(msg, keys.Escape):
 			m.confirming = false
 			m.confirmTarget = ""
-			return m, nil
+			return *m, nil
 		}
-		return m, nil
+		return *m, nil
 	}
 
 	switch {
 	case key.Matches(msg, keys.Quit):
-		return m, tea.Quit
+		return *m, tea.Quit
 
 	case key.Matches(msg, keys.Up):
 		if m.activePanel == panelList {
@@ -389,7 +389,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logScrollPos = max(0, m.logScrollPos-1)
 			m.logFollow = false
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Down):
 		if m.activePanel == panelList {
@@ -398,7 +398,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logScrollPos++
 			m.logFollow = false
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.PageUp):
 		if m.activePanel == panelLogs {
@@ -406,7 +406,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logScrollPos = max(0, m.logScrollPos-pageSize)
 			m.logFollow = false
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.PageDown):
 		if m.activePanel == panelLogs {
@@ -414,38 +414,38 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logScrollPos += pageSize
 			m.logFollow = false
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Tab):
 		m.activePanel = (m.activePanel + 1) % 2
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Left):
 		m.activePanel = panelList
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Right):
 		m.activePanel = panelLogs
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Escape):
 		if m.activePanel == panelLogs {
 			m.activePanel = panelList
-			return m, nil
+			return *m, nil
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Tab1):
 		m.activeTab = tabSessions
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Tab2):
 		m.activeTab = tabProcesses
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Tab3):
 		m.activeTab = tabHistory
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Enter):
 		id := m.selectedItemID()
@@ -455,9 +455,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.activePanel = panelLogs
 			m.logScrollPos = 0 // Reset scroll to top initially
 			m.logFollow = true // Enable follow for new selection
-			return m, tea.Batch(m.fetchLogs(id), tickLogs())
+			return *m, tea.Batch(m.fetchLogs(id), tickLogs())
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Kill):
 		id := m.selectedItemID()
@@ -465,19 +465,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.confirming = true
 			m.confirmTarget = id
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Search):
 		m.searching = true
 		m.searchInput.Focus()
-		return m, textinput.Blink
+		return *m, textinput.Blink
 
 	case key.Matches(msg, keys.Follow):
 		m.logFollow = !m.logFollow
 		if m.logFollow {
 			m.logScrollPos = 999999
 		}
-		return m, nil
+		return *m, nil
 
 	case key.Matches(msg, keys.Message):
 		if m.activeTab == tabSessions {
@@ -491,13 +491,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				}
 				m.messaging = true
 				m.msgInput.Focus()
-				return m, textinput.Blink
+				return *m, textinput.Blink
 			}
 		}
-		return m, nil
+		return *m, nil
 	}
 
-	return m, nil
+	return *m, nil
 }
 
 func killProcess(sessionID string) tea.Cmd {
