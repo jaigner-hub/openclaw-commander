@@ -1,0 +1,249 @@
+package data
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// FetchSessions calls the sessions_list API tool and returns sessions.
+func (c *Client) FetchSessions() ([]Session, error) {
+	body, err := c.invoke(toolRequest{
+		Tool: "sessions_list",
+		Args: map[string]interface{}{},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse sessions response: %w", err)
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("sessions_list: API returned ok=false")
+	}
+
+	var result SessionsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse sessions result: %w", err)
+	}
+	return result.Details.Sessions, nil
+}
+
+// FetchProcesses tries the gateway API for process list.
+// Falls back gracefully if the tool isn't available.
+func (c *Client) FetchProcesses() ([]Process, error) {
+	body, err := c.invoke(toolRequest{
+		Tool: "process",
+		Args: map[string]interface{}{"action": "list"},
+	})
+	if err != nil {
+		// Tool not available via HTTP — return empty, no error
+		return nil, nil
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil
+	}
+	if !resp.OK {
+		return nil, nil
+	}
+
+	var result TextResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, nil
+	}
+
+	var text string
+	for _, c := range result.Content {
+		if c.Type == "text" {
+			text += c.Text
+		}
+	}
+
+	return parseProcessList(text), nil
+}
+
+// parseProcessList parses the text table from the process list API.
+// Each line has the format: "name status runtime :: command"
+func parseProcessList(text string) []Process {
+	var procs []Process
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		p := parseProcessLine(line)
+		if p.SessionName != "" {
+			procs = append(procs, p)
+		}
+	}
+	return procs
+}
+
+func parseProcessLine(line string) Process {
+	// Format: "name status runtime :: command"
+	parts := strings.SplitN(line, "::", 2)
+	var cmd string
+	if len(parts) == 2 {
+		cmd = strings.TrimSpace(parts[1])
+	}
+	fields := strings.Fields(strings.TrimSpace(parts[0]))
+	var p Process
+	switch {
+	case len(fields) >= 3:
+		p.SessionName = fields[0]
+		p.Status = fields[1]
+		p.Runtime = fields[2]
+		p.Command = cmd
+	case len(fields) == 2:
+		p.SessionName = fields[0]
+		p.Status = fields[1]
+		p.Command = cmd
+	case len(fields) == 1:
+		p.SessionName = fields[0]
+		p.Command = cmd
+	}
+	return p
+}
+
+// FetchProcessLog tries the gateway API for process logs.
+func (c *Client) FetchProcessLog(sessionID string, limit int) (string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	body, err := c.invoke(toolRequest{
+		Tool: "process",
+		Args: map[string]interface{}{
+			"action":    "log",
+			"sessionId": sessionID,
+			"limit":     limit,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("process log unavailable: %w", err)
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", nil
+	}
+	if !resp.OK {
+		return "", nil
+	}
+
+	var result TextResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return "", nil
+	}
+
+	var sb strings.Builder
+	for _, c := range result.Content {
+		if c.Type == "text" {
+			sb.WriteString(c.Text)
+		}
+	}
+	return StripANSI(sb.String()), nil
+}
+
+// FetchSessionHistory calls sessions_history for a given session key.
+func (c *Client) FetchSessionHistory(sessionKey string, limit int) (string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	body, err := c.invoke(toolRequest{
+		Tool: "sessions_history",
+		Args: map[string]interface{}{
+			"sessionKey":   sessionKey,
+			"limit":        limit,
+			"includeTools": true,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("parse history response: %w", err)
+	}
+	if !resp.OK {
+		return "", fmt.Errorf("sessions_history: API returned ok=false")
+	}
+
+	// Result has a "details" object with the parsed data
+	var outer struct {
+		Details json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(resp.Result, &outer); err != nil {
+		return "", fmt.Errorf("parse history result: %w", err)
+	}
+
+	var result struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Model     string `json:"model,omitempty"`
+			Timestamp int64  `json:"timestamp,omitempty"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(outer.Details, &result); err != nil {
+		return "", fmt.Errorf("parse history details: %w", err)
+	}
+
+	var sb strings.Builder
+	for _, msg := range result.Messages {
+		role := strings.ToUpper(msg.Role)
+		sb.WriteString(fmt.Sprintf("─── %s ", role))
+		if msg.Model != "" {
+			sb.WriteString(fmt.Sprintf("(%s) ", msg.Model))
+		}
+		sb.WriteString("───\n")
+		for _, c := range msg.Content {
+			if c.Type == "text" && c.Text != "" {
+				sb.WriteString(c.Text)
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), nil
+}
+
+// SendMessage sends a message to a session via `openclaw agent`.
+func (c *Client) SendMessage(sessionID, message string) (string, error) {
+	out, err := exec.Command("openclaw", "agent",
+		"--session-id", sessionID,
+		"--message", message,
+		"--json").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("openclaw agent: %s", string(out))
+	}
+	return string(out), nil
+}
+
+// FetchGatewayHealth does a simple GET to the gateway root to check connectivity.
+func (c *Client) FetchGatewayHealth() (*GatewayHealth, error) {
+	start := time.Now()
+	resp, err := c.http.Get(c.cfg.GatewayURL + "/health")
+	dur := time.Since(start)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	h := &GatewayHealth{
+		OK:         resp.StatusCode == http.StatusOK,
+		DurationMs: int(dur.Milliseconds()),
+		Ts:         time.Now().UnixMilli(),
+	}
+	return h, nil
+}
