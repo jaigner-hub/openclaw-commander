@@ -408,6 +408,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedLogID = id
 			m.selectedLogTab = m.activeTab
 			m.activePanel = panelLogs
+			m.logScrollPos = 0 // Reset scroll to top initially
+			m.logFollow = true // Enable follow for new selection
 			return m, tea.Batch(m.fetchLogs(id), tickLogs())
 		}
 		return m, nil
