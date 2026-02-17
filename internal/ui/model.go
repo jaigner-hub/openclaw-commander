@@ -202,24 +202,25 @@ func cleanLogContent(content string) string {
 }
 
 // compressLogContent removes verbose noise from agent transcripts:
-// - Strips consecutive ASSISTANT headers (keeps only the last before real content)
+// - Strips ALL ASSISTANT/USER role headers entirely
 // - Removes planning filler lines ("Now let's...", "Now I'll...", "Let me...", etc.)
 // - Collapses blank lines
 func compressLogContent(content string) string {
 	lines := strings.Split(content, "\n")
 	var out []string
 	prevBlank := false
-	prevAssistantHeader := ""
 
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Detect ASSISTANT headers like "─── ASSISTANT (model) ───"
+		// Strip ASSISTANT headers like "─── ASSISTANT (model) ───"
 		if strings.HasPrefix(trimmed, "─── ASSISTANT") && strings.HasSuffix(trimmed, "───") {
-			// Buffer the header; only emit if followed by real content
-			prevAssistantHeader = line
-			prevBlank = false
+			continue
+		}
+
+		// Strip USER headers like "─── USER ───"
+		if strings.HasPrefix(trimmed, "─── USER") && strings.HasSuffix(trimmed, "───") {
 			continue
 		}
 
@@ -238,12 +239,6 @@ func compressLogContent(content string) string {
 			continue
 		}
 		prevBlank = false
-
-		// If we have a buffered header and this is real content, emit header first
-		if prevAssistantHeader != "" {
-			out = append(out, prevAssistantHeader)
-			prevAssistantHeader = ""
-		}
 
 		out = append(out, line)
 	}
