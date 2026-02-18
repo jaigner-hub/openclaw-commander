@@ -11,6 +11,13 @@ import (
 	"github.com/jaigner-hub/openclaw-tui/internal/config"
 )
 
+// SpawnResult holds the response from sessions_spawn.
+type SpawnResult struct {
+	SessionID string `json:"sessionId"`
+	Label     string `json:"label"`
+	Model     string `json:"model"`
+}
+
 // Client talks to the OpenClaw Gateway HTTP API.
 type Client struct {
 	cfg    config.Config
@@ -61,4 +68,44 @@ func (c *Client) invoke(req toolRequest) ([]byte, error) {
 		return nil, fmt.Errorf("gateway %d: %s", resp.StatusCode, string(data))
 	}
 	return data, nil
+}
+
+// SpawnSession creates a new agent session via sessions_spawn.
+func (c *Client) SpawnSession(prompt, model, label string) (*SpawnResult, error) {
+	args := map[string]interface{}{
+		"prompt": prompt,
+	}
+	if model != "" {
+		args["model"] = model
+	}
+	if label != "" {
+		args["label"] = label
+	}
+
+	body, err := c.invoke(toolRequest{
+		Tool: "sessions_spawn",
+		Args: args,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse spawn response: %w", err)
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("sessions_spawn: API returned ok=false")
+	}
+
+	// Try to extract session info from result
+	var result struct {
+		Details *SpawnResult `json:"details"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err == nil && result.Details != nil {
+		return result.Details, nil
+	}
+
+	// Fallback: return minimal result
+	return &SpawnResult{}, nil
 }

@@ -37,6 +37,14 @@ type healthMsg struct{ health *data.GatewayHealth }
 type errMsg struct{ err error }
 type agentReplyMsg struct{ reply string }
 type agentSendingMsg struct{}
+type spawnSuccessMsg struct{ result *data.SpawnResult }
+type spawnField int
+const (
+	spawnFieldPrompt spawnField = iota
+	spawnFieldModel
+	spawnFieldLabel
+	spawnFieldCount // sentinel
+)
 type archivedMsg struct{ runs []data.ArchivedRun }
 
 // Model is the main Bubble Tea model.
@@ -82,6 +90,14 @@ type Model struct {
 
 	lastError string
 
+	// Spawn agent form
+	spawning       bool
+	spawnField     spawnField
+	spawnPrompt    textinput.Model
+	spawnModel     textinput.Model
+	spawnLabel     textinput.Model
+	spawnSpinning  bool
+
 	// Verbose level for tool display
 	verboseLevel data.VerboseLevel
 
@@ -102,10 +118,28 @@ func NewModel(cfg config.Config) Model {
 	mi.CharLimit = 1024
 	mi.Width = 60
 
+	sp := textinput.New()
+	sp.Placeholder = "What should the agent do?"
+	sp.CharLimit = 2048
+	sp.Width = 60
+
+	sm := textinput.New()
+	sm.Placeholder = "(optional) e.g. anthropic/claude-opus-4-6"
+	sm.CharLimit = 128
+	sm.Width = 60
+
+	sl := textinput.New()
+	sl.Placeholder = "(optional) e.g. my-task"
+	sl.CharLimit = 128
+	sl.Width = 60
+
 	return Model{
 		logFollow:   true,
 		searchInput: ti,
 		msgInput:    mi,
+		spawnPrompt: sp,
+		spawnModel:  sm,
+		spawnLabel:  sl,
 		client:      data.NewClient(cfg),
 	}
 }
@@ -369,8 +403,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spawnSuccessMsg:
+		m.spawnSpinning = false
+		m.spawning = false
+		label := "new agent"
+		if msg.result != nil && msg.result.SessionID != "" {
+			label = msg.result.SessionID
+		}
+		m.lastError = "" // clear any previous error
+		_ = label
+		// Refresh sessions to show the new one
+		return m, m.fetchSessions
+
 	case errMsg:
 		m.sending = false
+		m.spawnSpinning = false
 		m.lastError = msg.err.Error()
 		return m, nil
 
@@ -441,6 +488,62 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.msgInput, cmd = m.msgInput.Update(msg)
+			return *m, cmd
+		}
+	}
+
+	// Handle spawn form mode
+	if m.spawning {
+		switch {
+		case key.Matches(msg, keys.Escape):
+			m.spawning = false
+			m.spawnPrompt.SetValue("")
+			m.spawnModel.SetValue("")
+			m.spawnLabel.SetValue("")
+			return *m, nil
+		case key.Matches(msg, keys.Tab):
+			// Cycle through fields
+			m.spawnField = (m.spawnField + 1) % spawnFieldCount
+			m.spawnPrompt.Blur()
+			m.spawnModel.Blur()
+			m.spawnLabel.Blur()
+			switch m.spawnField {
+			case spawnFieldPrompt:
+				m.spawnPrompt.Focus()
+			case spawnFieldModel:
+				m.spawnModel.Focus()
+			case spawnFieldLabel:
+				m.spawnLabel.Focus()
+			}
+			return *m, textinput.Blink
+		case key.Matches(msg, keys.Enter):
+			prompt := m.spawnPrompt.Value()
+			if prompt == "" {
+				m.lastError = "prompt is required"
+				return *m, nil
+			}
+			model := m.spawnModel.Value()
+			label := m.spawnLabel.Value()
+			m.spawnSpinning = true
+			m.lastError = ""
+			client := m.client
+			return *m, func() tea.Msg {
+				result, err := client.SpawnSession(prompt, model, label)
+				if err != nil {
+					return errMsg{fmt.Errorf("spawn: %w", err)}
+				}
+				return spawnSuccessMsg{result}
+			}
+		default:
+			var cmd tea.Cmd
+			switch m.spawnField {
+			case spawnFieldPrompt:
+				m.spawnPrompt, cmd = m.spawnPrompt.Update(msg)
+			case spawnFieldModel:
+				m.spawnModel, cmd = m.spawnModel.Update(msg)
+			case spawnFieldLabel:
+				m.spawnLabel, cmd = m.spawnLabel.Update(msg)
+			}
 			return *m, cmd
 		}
 	}
@@ -599,6 +702,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return *m, nil
+
+	case key.Matches(msg, keys.Spawn):
+		m.spawning = true
+		m.spawnField = spawnFieldPrompt
+		m.spawnPrompt.SetValue("")
+		m.spawnModel.SetValue("")
+		m.spawnLabel.SetValue("")
+		m.spawnPrompt.Focus()
+		m.spawnModel.Blur()
+		m.spawnLabel.Blur()
+		return *m, textinput.Blink
 	}
 
 	return *m, nil
@@ -793,6 +907,11 @@ func (m Model) View() string {
 	right := rightBorder.Width(logWidth).Height(contentHeight).Render(rightPanel)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	if m.spawning {
+		overlay := m.renderSpawnForm()
+		return lipgloss.JoinVertical(lipgloss.Left, main, overlay)
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, main, statusBar)
 }
@@ -1088,6 +1207,48 @@ func (m Model) renderLogPanel(width, height int) string {
 	return b.String()
 }
 
+func (m Model) renderSpawnForm() string {
+	var b strings.Builder
+	width := m.width
+	if width == 0 {
+		width = 80
+	}
+
+	title := titleStyle.Render("🚀 Spawn New Agent")
+	if m.spawnSpinning {
+		title += statusThinking.Render(" ⏳ spawning...")
+	}
+	b.WriteString(title + "\n")
+
+	fields := []struct {
+		label  string
+		input  textinput.Model
+		active bool
+	}{
+		{"Prompt", m.spawnPrompt, m.spawnField == spawnFieldPrompt},
+		{"Model ", m.spawnModel, m.spawnField == spawnFieldModel},
+		{"Label ", m.spawnLabel, m.spawnField == spawnFieldLabel},
+	}
+
+	for _, f := range fields {
+		marker := "  "
+		labelStyle := dimStyle
+		if f.active {
+			marker = "▸ "
+			labelStyle = accentStyle
+		}
+		b.WriteString(marker + labelStyle.Render(f.label+": ") + f.input.View() + "\n")
+	}
+
+	b.WriteString(dimStyle.Render("  tab:next field  ↵:spawn  esc:cancel"))
+	if m.lastError != "" {
+		b.WriteString("  " + statusFailed.Render(m.lastError))
+	}
+	b.WriteString("\n")
+
+	return statusBarStyle.Width(width).Render(b.String())
+}
+
 func (m Model) renderStatusBar() string {
 	width := m.width
 	if width == 0 {
@@ -1138,7 +1299,7 @@ func (m Model) renderStatusBar() string {
 
 	// Right: keybindings help
 	verboseTag := dimStyle.Render(fmt.Sprintf("v:verbose(%s)", m.verboseLevel))
-	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  /:search  f:follow  ") + verboseTag + dimStyle.Render("  q:quit")
+	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  s:spawn  /:search  f:follow  ") + verboseTag + dimStyle.Render("  q:quit")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

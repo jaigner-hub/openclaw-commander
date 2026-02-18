@@ -23,6 +23,7 @@ type keyMap struct {
 	Escape   key.Binding
 	Message  key.Binding
 	Verbose  key.Binding
+	Spawn    key.Binding
 }
 
 var keys = keyMap{
@@ -105,5 +106,9 @@ var keys = keyMap{
 	Verbose: key.NewBinding(
 		key.WithKeys("v"),
 		key.WithHelp("v", "verbose"),
+	),
+	Spawn: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "spawn"),
 	),
 }
