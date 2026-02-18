@@ -646,8 +646,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activePanel == panelList {
 			m.moveCursor(-1)
 		} else {
-			m.clampLogScroll()
 			m.logScrollPos = max(0, m.logScrollPos-1)
+			m.clampLogScroll(m.logWidth())
 			m.logFollow = false
 		}
 		return *m, nil
@@ -656,32 +656,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.activePanel == panelList {
 			m.moveCursor(1)
 		} else {
-			m.clampLogScroll()
 			m.logScrollPos++
+			m.clampLogScroll(m.logWidth())
 			m.logFollow = false
 		}
 		return *m, nil
 
 	case key.Matches(msg, keys.PageUp):
 		if m.activePanel == panelLogs {
-			m.clampLogScroll()
 			pageSize := m.logViewHeight() - 3
 			if pageSize < 1 {
 				pageSize = 10
 			}
 			m.logScrollPos = max(0, m.logScrollPos-pageSize)
+			m.clampLogScroll(m.logWidth())
 			m.logFollow = false
 		}
 		return *m, nil
 
 	case key.Matches(msg, keys.PageDown):
 		if m.activePanel == panelLogs {
-			m.clampLogScroll()
 			pageSize := m.logViewHeight() - 3
 			if pageSize < 1 {
 				pageSize = 10
 			}
 			m.logScrollPos += pageSize
+			m.clampLogScroll(m.logWidth())
 			m.logFollow = false
 		}
 		return *m, nil
@@ -920,12 +920,23 @@ func (m Model) selectedItemID() string {
 	return ""
 }
 
-func (m *Model) clampLogScroll() {
+func (m *Model) clampLogScroll(width int) {
 	if m.logContent == "" {
 		m.logScrollPos = 0
 		return
 	}
-	lines := strings.Split(m.logContent, "\n")
+	// Use wrapped lines (same as renderLogPanel) for accurate scroll bounds
+	rawLines := strings.Split(m.logContent, "\n")
+	var lines []string
+	for _, line := range rawLines {
+		if width > 0 && len(line) > width {
+			for len(line) > width {
+				lines = append(lines, line[:width])
+				line = line[width:]
+			}
+		}
+		lines = append(lines, line)
+	}
 	viewH := m.logViewHeight() - 3
 	if m.currentQuery != "" {
 		viewH--
@@ -947,21 +958,28 @@ func (m Model) logViewHeight() int {
 	return max(1, m.height-4)
 }
 
+// logWidth returns the consistent width calculation for the log panel.
+// This must match the calculation used in View().
+func (m Model) logWidth() int {
+	listWidth := m.width*2/5 - 2
+	logWidth := m.width - listWidth - 6
+	if logWidth < 20 {
+		logWidth = 20
+	}
+	return logWidth
+}
+
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 
 	listWidth := m.width*2/5 - 2
-	logWidth := m.width - listWidth - 6
-	contentHeight := m.height - 4 // borders + status bar
-
 	if listWidth < 20 {
 		listWidth = 20
 	}
-	if logWidth < 20 {
-		logWidth = 20
-	}
+	logWidth := m.logWidth()
+	contentHeight := m.height - 4 // borders + status bar
 	if contentHeight < 5 {
 		contentHeight = 5
 	}
@@ -1272,6 +1290,8 @@ func (m Model) renderLogPanel(width, height int) string {
 	if start > len(lines)-viewH {
 		start = max(0, len(lines)-viewH)
 	}
+	// Sync the clamped value back to scroll position to prevent state mismatch
+	m.logScrollPos = start
 	end := start + viewH
 	if end > len(lines) {
 		end = len(lines)
