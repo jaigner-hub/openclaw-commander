@@ -11,10 +11,11 @@ A terminal dashboard for monitoring and interacting with [OpenClaw](https://gith
 - **Spawn** — Create new agent sessions with custom prompts and model selection
 - **Processes** — Monitor running claude/openclaw processes (reads from `~/.openclaw/process-list.json` or falls back to `ps`)
 - **History** — Browse archived sub-agent runs (completed sessions with transcripts on disk)
-- **Live refresh** — Sessions poll every 5s, processes every 3s, logs every 2s
+- **Gateway health** — Live connection status and latency displayed in the status bar
+- **Live refresh** — Sessions poll every 5s, processes every 3s, logs every 2s, health every 30s
 - **Search/filter** — Filter sessions, processes, or history with `/`
 - **Follow mode** — Auto-scroll logs as new content arrives
-- **Verbose levels** — Cycle through tool display modes (off/summary/full) with `v`
+- **Verbose levels** — Cycle through tool display modes (summary/full/off) with `v`
 
 ## Install
 
@@ -60,7 +61,7 @@ The TUI auto-discovers your gateway config from `~/.openclaw/openclaw.json`.
 | `3` | History tab (archived sub-agent runs) |
 | `/` | Search/filter |
 | `f` | Toggle follow mode (auto-scroll) |
-| `v` | Cycle verbose level (off → summary → full) |
+| `v` | Cycle verbose level (summary → full → off) |
 | `pgup/pgdown` or `ctrl+u/ctrl+d` | Page up/down in logs |
 | `x` | Kill process (with confirmation) |
 | `q` or `ctrl+c` | Quit |
@@ -81,7 +82,7 @@ When spawning a new agent (`s`):
 - **Sessions & History** — Fetched via Gateway HTTP API (`/tools/invoke`)
 - **Processes** — Reads from `~/.openclaw/process-list.json` (populated by OpenClaw heartbeat), falls back to `ps` scan
 - **Messaging** — Shells out to `openclaw agent --session-id <id> --message "..."`
-- **Spawning** — Shells out to `openclaw agent --message "..." --session-id <id>` (runs detached in background)
+- **Spawning** — Sends an instruction to the main agent session (via `openclaw agent`) asking it to spawn a sub-agent with the given prompt, model, and label
 - **History** — Reads archived runs from `.jsonl` transcript files in `~/.openclaw/agents/main/sessions/`
 
 Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss).
