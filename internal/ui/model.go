@@ -91,12 +91,14 @@ type Model struct {
 	lastError string
 
 	// Spawn agent form
-	spawning       bool
-	spawnField     spawnField
-	spawnPrompt    textinput.Model
-	spawnModel     textinput.Model
-	spawnLabel     textinput.Model
-	spawnSpinning  bool
+	spawning          bool
+	spawnField        spawnField
+	spawnPrompt       textinput.Model
+	spawnModelCursor  int
+	spawnModelCustom  textinput.Model
+	spawnModelOptions []string
+	spawnLabel        textinput.Model
+	spawnSpinning     bool
 
 	// Verbose level for tool display
 	verboseLevel data.VerboseLevel
@@ -123,24 +125,38 @@ func NewModel(cfg config.Config) Model {
 	sp.CharLimit = 2048
 	sp.Width = 60
 
-	sm := textinput.New()
-	sm.Placeholder = "(optional) e.g. anthropic/claude-opus-4-6"
-	sm.CharLimit = 128
-	sm.Width = 60
+	smc := textinput.New()
+	smc.Placeholder = "type model name..."
+	smc.CharLimit = 128
+	smc.Width = 60
 
 	sl := textinput.New()
 	sl.Placeholder = "(optional) e.g. my-task"
 	sl.CharLimit = 128
 	sl.Width = 60
 
+	modelOptions := []string{
+		"(default)",
+		"anthropic/claude-sonnet-4-20250514",
+		"anthropic/claude-opus-4-0-20250514",
+		"openai/gpt-4.1",
+		"openai/o3",
+		"google/gemini-2.5-pro",
+		"google/gemini-2.5-flash",
+		"deepseek/deepseek-r1",
+		"deepseek/deepseek-chat",
+		"(custom...)",
+	}
+
 	return Model{
-		logFollow:   true,
-		searchInput: ti,
-		msgInput:    mi,
-		spawnPrompt: sp,
-		spawnModel:  sm,
-		spawnLabel:  sl,
-		client:      data.NewClient(cfg),
+		logFollow:         true,
+		searchInput:       ti,
+		msgInput:          mi,
+		spawnPrompt:       sp,
+		spawnModelCustom:  smc,
+		spawnModelOptions: modelOptions,
+		spawnLabel:        sl,
+		client:            data.NewClient(cfg),
 	}
 }
 
@@ -494,35 +510,77 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	// Handle spawn form mode
 	if m.spawning {
+		isCustomModel := m.spawnModelOptions[m.spawnModelCursor] == "(custom...)"
+
 		switch {
 		case key.Matches(msg, keys.Escape):
+			if isCustomModel && m.spawnField == spawnFieldModel && m.spawnModelCustom.Value() != "" {
+				// First esc in custom clears the input
+				m.spawnModelCustom.SetValue("")
+				return *m, nil
+			}
 			m.spawning = false
 			m.spawnPrompt.SetValue("")
-			m.spawnModel.SetValue("")
+			m.spawnModelCustom.SetValue("")
 			m.spawnLabel.SetValue("")
+			m.spawnModelCursor = 0
 			return *m, nil
 		case key.Matches(msg, keys.Tab):
 			// Cycle through fields
 			m.spawnField = (m.spawnField + 1) % spawnFieldCount
 			m.spawnPrompt.Blur()
-			m.spawnModel.Blur()
+			m.spawnModelCustom.Blur()
 			m.spawnLabel.Blur()
 			switch m.spawnField {
 			case spawnFieldPrompt:
 				m.spawnPrompt.Focus()
 			case spawnFieldModel:
-				m.spawnModel.Focus()
+				if isCustomModel {
+					m.spawnModelCustom.Focus()
+				}
 			case spawnFieldLabel:
 				m.spawnLabel.Focus()
 			}
 			return *m, textinput.Blink
+		case m.spawnField == spawnFieldModel && !isCustomModel && (key.Matches(msg, keys.Up) || key.Matches(msg, keys.Down)):
+			// Cycle model options
+			delta := 1
+			if key.Matches(msg, keys.Up) {
+				delta = -1
+			}
+			m.spawnModelCursor += delta
+			if m.spawnModelCursor < 0 {
+				m.spawnModelCursor = len(m.spawnModelOptions) - 1
+			}
+			if m.spawnModelCursor >= len(m.spawnModelOptions) {
+				m.spawnModelCursor = 0
+			}
+			// If we landed on custom, focus the text input
+			if m.spawnModelOptions[m.spawnModelCursor] == "(custom...)" {
+				m.spawnModelCustom.Focus()
+				return *m, textinput.Blink
+			}
+			return *m, nil
 		case key.Matches(msg, keys.Enter):
+			// If on custom model field, enter with empty text goes back to selector
+			if isCustomModel && m.spawnField == spawnFieldModel && m.spawnModelCustom.Value() == "" {
+				m.spawnModelCursor = 0
+				m.spawnModelCustom.Blur()
+				return *m, nil
+			}
 			prompt := m.spawnPrompt.Value()
 			if prompt == "" {
 				m.lastError = "prompt is required"
 				return *m, nil
 			}
-			model := m.spawnModel.Value()
+			// Resolve model
+			model := ""
+			selected := m.spawnModelOptions[m.spawnModelCursor]
+			if selected == "(custom...)" {
+				model = m.spawnModelCustom.Value()
+			} else if selected != "(default)" {
+				model = selected
+			}
 			label := m.spawnLabel.Value()
 			m.spawnSpinning = true
 			m.lastError = ""
@@ -540,7 +598,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			case spawnFieldPrompt:
 				m.spawnPrompt, cmd = m.spawnPrompt.Update(msg)
 			case spawnFieldModel:
-				m.spawnModel, cmd = m.spawnModel.Update(msg)
+				if isCustomModel {
+					m.spawnModelCustom, cmd = m.spawnModelCustom.Update(msg)
+				}
 			case spawnFieldLabel:
 				m.spawnLabel, cmd = m.spawnLabel.Update(msg)
 			}
@@ -707,10 +767,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.spawning = true
 		m.spawnField = spawnFieldPrompt
 		m.spawnPrompt.SetValue("")
-		m.spawnModel.SetValue("")
+		m.spawnModelCursor = 0
+		m.spawnModelCustom.SetValue("")
 		m.spawnLabel.SetValue("")
 		m.spawnPrompt.Focus()
-		m.spawnModel.Blur()
+		m.spawnModelCustom.Blur()
 		m.spawnLabel.Blur()
 		return *m, textinput.Blink
 	}
@@ -1220,27 +1281,40 @@ func (m Model) renderSpawnForm() string {
 	}
 	b.WriteString(title + "\n")
 
-	fields := []struct {
-		label  string
-		input  textinput.Model
-		active bool
-	}{
-		{"Prompt", m.spawnPrompt, m.spawnField == spawnFieldPrompt},
-		{"Model ", m.spawnModel, m.spawnField == spawnFieldModel},
-		{"Label ", m.spawnLabel, m.spawnField == spawnFieldLabel},
+	// Prompt field
+	promptMarker, promptLabel := "  ", dimStyle
+	if m.spawnField == spawnFieldPrompt {
+		promptMarker, promptLabel = "▸ ", accentStyle
 	}
+	b.WriteString(promptMarker + promptLabel.Render("Prompt: ") + m.spawnPrompt.View() + "\n")
 
-	for _, f := range fields {
-		marker := "  "
-		labelStyle := dimStyle
-		if f.active {
-			marker = "▸ "
-			labelStyle = accentStyle
+	// Model selector field
+	modelMarker, modelLabel := "  ", dimStyle
+	if m.spawnField == spawnFieldModel {
+		modelMarker, modelLabel = "▸ ", accentStyle
+	}
+	selected := m.spawnModelOptions[m.spawnModelCursor]
+	if selected == "(custom...)" {
+		b.WriteString(modelMarker + modelLabel.Render("Model:  ") + m.spawnModelCustom.View() + "\n")
+	} else {
+		// Show selector with arrows
+		var modelDisplay string
+		if m.spawnField == spawnFieldModel {
+			modelDisplay = dimStyle.Render("↑↓ ") + accentStyle.Render(selected) + dimStyle.Render(" ↑↓")
+		} else {
+			modelDisplay = selected
 		}
-		b.WriteString(marker + labelStyle.Render(f.label+": ") + f.input.View() + "\n")
+		b.WriteString(modelMarker + modelLabel.Render("Model:  ") + modelDisplay + "\n")
 	}
 
-	b.WriteString(dimStyle.Render("  tab:next field  ↵:spawn  esc:cancel"))
+	// Label field
+	labelMarker, labelLabel := "  ", dimStyle
+	if m.spawnField == spawnFieldLabel {
+		labelMarker, labelLabel = "▸ ", accentStyle
+	}
+	b.WriteString(labelMarker + labelLabel.Render("Label:  ") + m.spawnLabel.View() + "\n")
+
+	b.WriteString(dimStyle.Render("  tab:next field  ↑↓:select model  ↵:spawn  esc:cancel"))
 	if m.lastError != "" {
 		b.WriteString("  " + statusFailed.Render(m.lastError))
 	}
