@@ -38,6 +38,7 @@ type errMsg struct{ err error }
 type agentReplyMsg struct{ reply string }
 type agentSendingMsg struct{}
 type spawnSuccessMsg struct{ result *data.SpawnResult }
+type agentListMsg struct{ agents []string }
 type spawnField int
 const (
 	spawnFieldPrompt spawnField = iota
@@ -135,16 +136,11 @@ func NewModel(cfg config.Config) Model {
 	sl.CharLimit = 128
 	sl.Width = 60
 
+	// Agent options — "main" is the default agent. Others are configured via `openclaw agents`.
+	// We'll try to populate from `openclaw agents list` at runtime.
 	modelOptions := []string{
 		"(default)",
-		"anthropic/claude-sonnet-4-20250514",
-		"anthropic/claude-opus-4-0-20250514",
-		"openai/gpt-4.1",
-		"openai/o3",
-		"google/gemini-2.5-pro",
-		"google/gemini-2.5-flash",
-		"deepseek/deepseek-r1",
-		"deepseek/deepseek-chat",
+		"main",
 		"(custom...)",
 	}
 
@@ -419,6 +415,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case agentListMsg:
+		options := []string{"(default)"}
+		options = append(options, msg.agents...)
+		options = append(options, "(custom...)")
+		m.spawnModelOptions = options
+		m.spawnModelCursor = 0
+		return m, nil
+
 	case spawnSuccessMsg:
 		m.spawnSpinning = false
 		m.spawning = false
@@ -573,20 +577,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.lastError = "prompt is required"
 				return *m, nil
 			}
-			// Resolve model
-			model := ""
+			// Resolve agent
+			agent := ""
 			selected := m.spawnModelOptions[m.spawnModelCursor]
 			if selected == "(custom...)" {
-				model = m.spawnModelCustom.Value()
+				agent = m.spawnModelCustom.Value()
 			} else if selected != "(default)" {
-				model = selected
+				agent = selected
 			}
 			label := m.spawnLabel.Value()
 			m.spawnSpinning = true
 			m.lastError = ""
 			client := m.client
 			return *m, func() tea.Msg {
-				result, err := client.SpawnSession(prompt, model, label)
+				result, err := client.SpawnSession(prompt, agent, label)
 				if err != nil {
 					return errMsg{fmt.Errorf("spawn: %w", err)}
 				}
@@ -773,7 +777,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.spawnPrompt.Focus()
 		m.spawnModelCustom.Blur()
 		m.spawnLabel.Blur()
-		return *m, textinput.Blink
+		client := m.client
+		return *m, tea.Batch(textinput.Blink, func() tea.Msg {
+			agents, _ := client.FetchAgents()
+			return agentListMsg{agents}
+		})
 	}
 
 	return *m, nil
@@ -1288,14 +1296,14 @@ func (m Model) renderSpawnForm() string {
 	}
 	b.WriteString(promptMarker + promptLabel.Render("Prompt: ") + m.spawnPrompt.View() + "\n")
 
-	// Model selector field
+	// Agent selector field
 	modelMarker, modelLabel := "  ", dimStyle
 	if m.spawnField == spawnFieldModel {
 		modelMarker, modelLabel = "▸ ", accentStyle
 	}
 	selected := m.spawnModelOptions[m.spawnModelCursor]
 	if selected == "(custom...)" {
-		b.WriteString(modelMarker + modelLabel.Render("Model:  ") + m.spawnModelCustom.View() + "\n")
+		b.WriteString(modelMarker + modelLabel.Render("Agent:  ") + m.spawnModelCustom.View() + "\n")
 	} else {
 		// Show selector with arrows
 		var modelDisplay string
@@ -1304,7 +1312,7 @@ func (m Model) renderSpawnForm() string {
 		} else {
 			modelDisplay = selected
 		}
-		b.WriteString(modelMarker + modelLabel.Render("Model:  ") + modelDisplay + "\n")
+		b.WriteString(modelMarker + modelLabel.Render("Agent:  ") + modelDisplay + "\n")
 	}
 
 	// Label field
@@ -1314,7 +1322,7 @@ func (m Model) renderSpawnForm() string {
 	}
 	b.WriteString(labelMarker + labelLabel.Render("Label:  ") + m.spawnLabel.View() + "\n")
 
-	b.WriteString(dimStyle.Render("  tab:next field  ↑↓:select model  ↵:spawn  esc:cancel"))
+	b.WriteString(dimStyle.Render("  tab:next field  ↑↓:select agent  ↵:spawn  esc:cancel"))
 	if m.lastError != "" {
 		b.WriteString("  " + statusFailed.Render(m.lastError))
 	}

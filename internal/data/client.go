@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/jaigner-hub/openclaw-tui/internal/config"
@@ -70,42 +72,86 @@ func (c *Client) invoke(req toolRequest) ([]byte, error) {
 	return data, nil
 }
 
-// SpawnSession creates a new agent session via sessions_spawn.
-func (c *Client) SpawnSession(prompt, model, label string) (*SpawnResult, error) {
-	args := map[string]interface{}{
-		"prompt": prompt,
+// FetchAgents returns the list of configured agent IDs.
+func (c *Client) FetchAgents() ([]string, error) {
+	out, err := exec.Command("openclaw", "agents", "list", "--json").CombinedOutput()
+	if err != nil {
+		// Fallback: try without --json
+		out2, err2 := exec.Command("openclaw", "agents", "list").CombinedOutput()
+		if err2 != nil {
+			return nil, fmt.Errorf("openclaw agents list: %s", strings.TrimSpace(string(out)))
+		}
+		out = out2
 	}
-	if model != "" {
-		args["model"] = model
+
+	// Try JSON parse
+	var agents []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(out, &agents) == nil {
+		var ids []string
+		for _, a := range agents {
+			if a.ID != "" {
+				ids = append(ids, a.ID)
+			} else if a.Name != "" {
+				ids = append(ids, a.Name)
+			}
+		}
+		return ids, nil
+	}
+
+	// Fallback: parse "- name (...)" lines from text output
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			// "- main (default)" -> "main"
+			name := strings.TrimPrefix(line, "- ")
+			if idx := strings.IndexByte(name, ' '); idx > 0 {
+				name = name[:idx]
+			}
+			ids = append(ids, name)
+		}
+	}
+	return ids, nil
+}
+
+// SpawnSession creates a new agent session via `openclaw agent` CLI.
+// The agent parameter selects a pre-configured agent (which controls the model).
+// If label is set, it's used as the session ID.
+func (c *Client) SpawnSession(prompt, agent, label string) (*SpawnResult, error) {
+	args := []string{"agent", "--message", prompt, "--json"}
+	if agent != "" {
+		args = append(args, "--agent", agent)
 	}
 	if label != "" {
-		args["label"] = label
+		args = append(args, "--session-id", label)
 	}
 
-	body, err := c.invoke(toolRequest{
-		Tool: "sessions_spawn",
-		Args: args,
-	})
+	cmd := exec.Command("openclaw", args...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("openclaw agent: %s", strings.TrimSpace(string(out)))
 	}
 
-	var resp APIResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse spawn response: %w", err)
-	}
-	if !resp.OK {
-		return nil, fmt.Errorf("sessions_spawn: API returned ok=false")
+	result := &SpawnResult{
+		Label: label,
+		Model: agent,
 	}
 
-	// Try to extract session info from result
-	var result struct {
-		Details *SpawnResult `json:"details"`
+	// Try to parse session ID from JSON output
+	var resp struct {
+		SessionID string `json:"sessionId"`
+		Session   string `json:"session"`
 	}
-	if err := json.Unmarshal(resp.Result, &result); err == nil && result.Details != nil {
-		return result.Details, nil
+	if json.Unmarshal(out, &resp) == nil {
+		if resp.SessionID != "" {
+			result.SessionID = resp.SessionID
+		} else if resp.Session != "" {
+			result.SessionID = resp.Session
+		}
 	}
 
-	// Fallback: return minimal result
-	return &SpawnResult{}, nil
+	return result, nil
 }
