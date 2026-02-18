@@ -19,9 +19,19 @@ A terminal dashboard for monitoring and interacting with [OpenClaw](https://gith
 
 ## Install
 
+**Recommended (explicit version avoids module proxy cache):**
+
+```bash
+go install github.com/jaigner-hub/openclaw-commander@v0.2.0
+```
+
+**Or install latest (may be cached by proxy.golang.org):**
+
 ```bash
 go install github.com/jaigner-hub/openclaw-commander@latest
 ```
+
+> **Note:** Go's module proxy (proxy.golang.org) caches versions. Using an explicit version tag ensures you get that exact release. `@latest` may return a stale cached version for up to 30 minutes after a new release.
 
 Or build from source:
 
