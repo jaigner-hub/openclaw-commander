@@ -1,4 +1,4 @@
-module github.com/jaigner-hub/openclaw-tui
+module github.com/jaigner-hub/openclaw-commander
 
 go 1.24.2
 

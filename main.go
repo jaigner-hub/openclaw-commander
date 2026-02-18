@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jaigner-hub/openclaw-tui/internal/config"
-	"github.com/jaigner-hub/openclaw-tui/internal/ui"
+	"github.com/jaigner-hub/openclaw-commander/internal/config"
+	"github.com/jaigner-hub/openclaw-commander/internal/ui"
 )
 
 func main() {

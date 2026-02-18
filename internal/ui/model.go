@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jaigner-hub/openclaw-tui/internal/config"
-	"github.com/jaigner-hub/openclaw-tui/internal/data"
+	"github.com/jaigner-hub/openclaw-commander/internal/config"
+	"github.com/jaigner-hub/openclaw-commander/internal/data"
 )
 
 const (

@@ -20,21 +20,21 @@ A terminal dashboard for monitoring and interacting with [OpenClaw](https://gith
 ## Install
 
 ```bash
-go install github.com/jaigner-hub/openclaw-tui@latest
+go install github.com/jaigner-hub/openclaw-commander@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone git@github.com:jaigner-hub/openclaw-tui.git
-cd openclaw-tui
-go build -o openclaw-tui .
+git clone git@github.com:jaigner-hub/openclaw-commander.git
+cd openclaw-commander
+go build -o openclaw-commander .
 ```
 
 ## Usage
 
 ```bash
-./openclaw-tui
+openclaw-commander
 ```
 
 The TUI auto-discovers your gateway config from `~/.openclaw/openclaw.json`.

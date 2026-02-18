@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaigner-hub/openclaw-tui/internal/config"
+	"github.com/jaigner-hub/openclaw-commander/internal/config"
 )
 
 // SpawnResult holds the response from sessions_spawn.
