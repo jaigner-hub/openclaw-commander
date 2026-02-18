@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,59 +74,81 @@ func (c *Client) invoke(req toolRequest) ([]byte, error) {
 	return data, nil
 }
 
-// FetchAgents returns the list of configured agent IDs.
-func (c *Client) FetchAgents() ([]string, error) {
-	out, err := exec.Command("openclaw", "agents", "list", "--json").CombinedOutput()
+// ModelOption represents a configured model with optional alias.
+type ModelOption struct {
+	ID    string
+	Alias string
+}
+
+// FetchConfiguredModels reads the model config from openclaw.json and returns
+// the primary model, fallbacks, and any additional models in the models map.
+func (c *Client) FetchConfiguredModels() ([]ModelOption, error) {
+	home := homeDir()
+	data, err := os.ReadFile(filepath.Join(home, ".openclaw", "openclaw.json"))
 	if err != nil {
-		// Fallback: try without --json
-		out2, err2 := exec.Command("openclaw", "agents", "list").CombinedOutput()
-		if err2 != nil {
-			return nil, fmt.Errorf("openclaw agents list: %s", strings.TrimSpace(string(out)))
-		}
-		out = out2
+		return nil, err
 	}
 
-	// Try JSON parse
-	var agents []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+	var cfg struct {
+		Agents struct {
+			Defaults struct {
+				Model struct {
+					Primary   string   `json:"primary"`
+					Fallbacks []string `json:"fallbacks"`
+				} `json:"model"`
+				Models map[string]struct {
+					Alias string `json:"alias"`
+				} `json:"models"`
+			} `json:"defaults"`
+		} `json:"agents"`
 	}
-	if json.Unmarshal(out, &agents) == nil {
-		var ids []string
-		for _, a := range agents {
-			if a.ID != "" {
-				ids = append(ids, a.ID)
-			} else if a.Name != "" {
-				ids = append(ids, a.Name)
-			}
-		}
-		return ids, nil
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
 	}
 
-	// Fallback: parse "- name (...)" lines from text output
-	var ids []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- ") {
-			// "- main (default)" -> "main"
-			name := strings.TrimPrefix(line, "- ")
-			if idx := strings.IndexByte(name, ' '); idx > 0 {
-				name = name[:idx]
-			}
-			ids = append(ids, name)
+	seen := make(map[string]bool)
+	var opts []ModelOption
+
+	// Primary first
+	if p := cfg.Agents.Defaults.Model.Primary; p != "" {
+		alias := ""
+		if m, ok := cfg.Agents.Defaults.Models[p]; ok && m.Alias != "" {
+			alias = m.Alias
 		}
+		opts = append(opts, ModelOption{ID: p, Alias: alias})
+		seen[p] = true
 	}
-	return ids, nil
+
+	// Then fallbacks
+	for _, fb := range cfg.Agents.Defaults.Model.Fallbacks {
+		if seen[fb] {
+			continue
+		}
+		alias := ""
+		if m, ok := cfg.Agents.Defaults.Models[fb]; ok && m.Alias != "" {
+			alias = m.Alias
+		}
+		opts = append(opts, ModelOption{ID: fb, Alias: alias})
+		seen[fb] = true
+	}
+
+	// Then any remaining models in the map
+	for id, m := range cfg.Agents.Defaults.Models {
+		if seen[id] {
+			continue
+		}
+		opts = append(opts, ModelOption{ID: id, Alias: m.Alias})
+		seen[id] = true
+	}
+
+	return opts, nil
 }
 
 // SpawnSession creates a new agent session via `openclaw agent` CLI.
-// The agent parameter selects a pre-configured agent (which controls the model).
-// If label is set, it's used as the session ID.
-func (c *Client) SpawnSession(prompt, agent, label string) (*SpawnResult, error) {
+// Model is accepted for display/future use but the CLI currently uses the
+// agent's configured primary model.
+func (c *Client) SpawnSession(prompt, model, label string) (*SpawnResult, error) {
 	args := []string{"agent", "--message", prompt, "--json"}
-	if agent != "" {
-		args = append(args, "--agent", agent)
-	}
 	if label != "" {
 		args = append(args, "--session-id", label)
 	}
@@ -137,7 +161,7 @@ func (c *Client) SpawnSession(prompt, agent, label string) (*SpawnResult, error)
 
 	result := &SpawnResult{
 		Label: label,
-		Model: agent,
+		Model: model,
 	}
 
 	// Try to parse session ID from JSON output
