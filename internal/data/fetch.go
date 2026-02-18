@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-// FetchSessions calls the sessions_list API tool and returns sessions.
+// FetchSessions calls the sessions_list API tool and merges in any
+// recently-active disk sessions not tracked by the gateway (e.g. TUI-spawned).
 func (c *Client) FetchSessions() ([]Session, error) {
 	body, err := c.invoke(toolRequest{
 		Tool: "sessions_list",
@@ -35,7 +36,58 @@ func (c *Client) FetchSessions() ([]Session, error) {
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return nil, fmt.Errorf("parse sessions result: %w", err)
 	}
-	return result.Details.Sessions, nil
+
+	sessions := result.Details.Sessions
+
+	// Merge disk sessions not in the gateway list (e.g. CLI/TUI-spawned)
+	knownIDs := make(map[string]bool)
+	for _, s := range sessions {
+		knownIDs[s.SessionID] = true
+	}
+
+	sessDir := filepath.Join(homeDir(), ".openclaw", "agents", "main", "sessions")
+	entries, _ := os.ReadDir(sessDir)
+	cutoff := time.Now().Add(-24 * time.Hour) // only show sessions from last 24h
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		// Skip deleted transcripts
+		if strings.Contains(e.Name(), ".deleted.") {
+			continue
+		}
+		sessionID := strings.TrimSuffix(e.Name(), ".jsonl")
+		if knownIDs[sessionID] {
+			continue
+		}
+
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+
+		label := readTranscriptLabel(filepath.Join(sessDir, e.Name()))
+		displayName := sessionID
+		if label != "" {
+			displayName = label
+			if len(displayName) > 40 {
+				displayName = displayName[:37] + "..."
+			}
+		}
+
+		sessions = append(sessions, Session{
+			Key:            sessionID,
+			SessionID:      sessionID,
+			Kind:           "cli",
+			Channel:        "tui",
+			DisplayName:    displayName,
+			UpdatedAt:      info.ModTime().UnixMilli(),
+			TranscriptPath: filepath.Join(sessDir, e.Name()),
+		})
+	}
+
+	return sessions, nil
 }
 
 // FetchProcesses reads the agent-maintained process list file,

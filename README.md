@@ -81,7 +81,7 @@ When spawning a new agent (`s`):
 - **Sessions & History** — Fetched via Gateway HTTP API (`/tools/invoke`)
 - **Processes** — Reads from `~/.openclaw/process-list.json` (populated by OpenClaw heartbeat), falls back to `ps` scan
 - **Messaging** — Shells out to `openclaw agent --session-id <id> --message "..."`
-- **Spawning** — Shells out to `openclaw agent --message "..." --json`
+- **Spawning** — Shells out to `openclaw agent --message "..." --session-id <id>` (runs detached in background)
 - **History** — Reads orphaned `.jsonl` transcript files from `~/.openclaw/agents/main/sessions/`
 
 Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss).
