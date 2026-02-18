@@ -228,13 +228,44 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 	}
 }
 
-// cleanLogContent removes carriage returns and other problematic characters
+// cleanLogContent removes carriage returns, box-drawing characters, and other
+// problematic Unicode that interferes with the TUI layout.
 func cleanLogContent(content string) string {
 	// Replace Windows line endings
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	// Replace standalone carriage returns (Docker progress bars)
 	content = strings.ReplaceAll(content, "\r", "\n")
-	return content
+	// Strip ANSI escape sequences
+	content = data.StripANSI(content)
+	// Replace box-drawing / table characters that break TUI rendering
+	var b strings.Builder
+	b.Grow(len(content))
+	for _, r := range content {
+		switch {
+		// Box Drawing block: U+2500–U+257F
+		case r >= 0x2500 && r <= 0x257F:
+			// Horizontals → dash, verticals → pipe, corners/junctions → +
+			switch {
+			case r == 0x2500 || r == 0x2501 || r == 0x2504 || r == 0x2505 ||
+				r == 0x2508 || r == 0x2509 || r == 0x254C || r == 0x254D:
+				b.WriteByte('-')
+			case r == 0x2502 || r == 0x2503 || r == 0x2506 || r == 0x2507 ||
+				r == 0x250A || r == 0x250B || r == 0x254E || r == 0x254F:
+				b.WriteByte('|')
+			default:
+				b.WriteByte('+')
+			}
+		// Block Elements: U+2580–U+259F
+		case r >= 0x2580 && r <= 0x259F:
+			b.WriteByte('#')
+		// Braille patterns: U+2800–U+28FF (sometimes used for charts)
+		case r >= 0x2800 && r <= 0x28FF:
+			b.WriteByte('.')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // compressLogContent removes verbose noise from agent transcripts:
