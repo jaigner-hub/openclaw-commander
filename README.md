@@ -2,15 +2,15 @@
 
 A terminal dashboard for monitoring and interacting with [OpenClaw](https://github.com/openclaw/openclaw) agents.
 
-![Go](https://img.shields.io/badge/Go-1.24-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Go](https://img.shields.io/badge/Go-1.24.2-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Features
 
-- **Sessions** — View active agent sessions across all channels (Signal, Matrix, Discord, etc.)
+- **Sessions** — View active agent sessions across all channels (Signal, Matrix, Discord, etc.), including TUI-spawned sessions merged from disk (last 24h)
 - **Messaging** — Send messages directly to any session from the TUI
 - **Spawn** — Create new agent sessions with custom prompts and model selection
 - **Processes** — Monitor running claude/openclaw processes (reads from `~/.openclaw/process-list.json` or falls back to `ps`)
-- **History** — Browse archived sub-agent transcripts after they complete
+- **History** — Browse archived sub-agent runs (completed sessions with transcripts on disk)
 - **Live refresh** — Sessions poll every 5s, processes every 3s, logs every 2s
 - **Search/filter** — Filter sessions, processes, or history with `/`
 - **Follow mode** — Auto-scroll logs as new content arrives
@@ -52,7 +52,7 @@ The TUI auto-discovers your gateway config from `~/.openclaw/openclaw.json`.
 | `↑/↓` or `j/k` | Navigate list |
 | `←/→` or `h/l` | Switch between list and log panels |
 | `Tab` | Switch between panels |
-| `Enter` | View session history / process logs / transcript |
+| `Enter` | View logs/history for selected session, process, or archived run |
 | `m` | Message selected session |
 | `s` | Spawn new agent session |
 | `1` | Sessions tab |
@@ -82,7 +82,7 @@ When spawning a new agent (`s`):
 - **Processes** — Reads from `~/.openclaw/process-list.json` (populated by OpenClaw heartbeat), falls back to `ps` scan
 - **Messaging** — Shells out to `openclaw agent --session-id <id> --message "..."`
 - **Spawning** — Shells out to `openclaw agent --message "..." --session-id <id>` (runs detached in background)
-- **History** — Reads orphaned `.jsonl` transcript files from `~/.openclaw/agents/main/sessions/`
+- **History** — Reads archived runs from `.jsonl` transcript files in `~/.openclaw/agents/main/sessions/`
 
 Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss).
 

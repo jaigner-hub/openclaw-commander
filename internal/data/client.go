@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jaigner-hub/openclaw-tui/internal/config"
@@ -143,33 +143,29 @@ func (c *Client) FetchConfiguredModels() ([]ModelOption, error) {
 	return opts, nil
 }
 
-// SpawnSession fires off a new agent session via `openclaw agent` in the
-// background and returns immediately. The session will appear in the
-// sessions list once the gateway picks it up.
-func (c *Client) SpawnSession(prompt, model, label string) (*SpawnResult, error) {
-	sessionID := label
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("tui-%d", time.Now().UnixMilli())
+// SpawnSession sends a message to the main agent session asking it to
+// spawn a sub-agent with the given prompt, model, and label.
+func (c *Client) SpawnSession(mainSessionID, prompt, model, label string) (*SpawnResult, error) {
+	// Build the instruction for the main agent
+	var msg strings.Builder
+	msg.WriteString("Spawn a sub-agent to work on this task")
+	if model != "" {
+		msg.WriteString(" using model " + model)
+	}
+	if label != "" {
+		msg.WriteString(" (label: " + label + ")")
+	}
+	msg.WriteString(":\n\n")
+	msg.WriteString(prompt)
+
+	reply, err := c.SendMessage(mainSessionID, msg.String())
+	if err != nil {
+		return nil, err
 	}
 
-	args := []string{"agent", "--message", prompt, "--session-id", sessionID}
-
-	cmd := exec.Command("openclaw", args...)
-	// Detach from our stdin/stdout so it runs fully in the background
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("openclaw agent start: %w", err)
-	}
-
-	// Release the process so it keeps running after we return
-	go cmd.Wait()
-
+	_ = reply
 	return &SpawnResult{
-		SessionID: sessionID,
-		Label:     label,
-		Model:     model,
+		Label: label,
+		Model: model,
 	}, nil
 }

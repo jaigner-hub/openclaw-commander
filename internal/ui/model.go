@@ -555,11 +555,25 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				model = selected
 			}
 			label := m.spawnLabel.Value()
+
+			// Find the main session
+			mainSessionID := ""
+			for _, s := range m.sessions {
+				if s.Kind == "main" || strings.HasSuffix(s.Key, ":main") {
+					mainSessionID = s.SessionID
+					break
+				}
+			}
+			if mainSessionID == "" {
+				m.lastError = "no main session found"
+				return *m, nil
+			}
+
 			m.spawnSpinning = true
 			m.lastError = ""
 			client := m.client
 			return *m, func() tea.Msg {
-				result, err := client.SpawnSession(prompt, model, label)
+				result, err := client.SpawnSession(mainSessionID, prompt, model, label)
 				if err != nil {
 					return errMsg{fmt.Errorf("spawn: %w", err)}
 				}
