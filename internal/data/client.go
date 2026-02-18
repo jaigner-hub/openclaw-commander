@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jaigner-hub/openclaw-tui/internal/config"
@@ -144,38 +143,33 @@ func (c *Client) FetchConfiguredModels() ([]ModelOption, error) {
 	return opts, nil
 }
 
-// SpawnSession creates a new agent session via `openclaw agent` CLI.
-// Model is accepted for display/future use but the CLI currently uses the
-// agent's configured primary model.
+// SpawnSession fires off a new agent session via `openclaw agent` in the
+// background and returns immediately. The session will appear in the
+// sessions list once the gateway picks it up.
 func (c *Client) SpawnSession(prompt, model, label string) (*SpawnResult, error) {
-	args := []string{"agent", "--message", prompt, "--json"}
-	if label != "" {
-		args = append(args, "--session-id", label)
+	sessionID := label
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("tui-%d", time.Now().UnixMilli())
 	}
+
+	args := []string{"agent", "--message", prompt, "--session-id", sessionID}
 
 	cmd := exec.Command("openclaw", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("openclaw agent: %s", strings.TrimSpace(string(out)))
+	// Detach from our stdin/stdout so it runs fully in the background
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("openclaw agent start: %w", err)
 	}
 
-	result := &SpawnResult{
-		Label: label,
-		Model: model,
-	}
+	// Release the process so it keeps running after we return
+	go cmd.Wait()
 
-	// Try to parse session ID from JSON output
-	var resp struct {
-		SessionID string `json:"sessionId"`
-		Session   string `json:"session"`
-	}
-	if json.Unmarshal(out, &resp) == nil {
-		if resp.SessionID != "" {
-			result.SessionID = resp.SessionID
-		} else if resp.Session != "" {
-			result.SessionID = resp.Session
-		}
-	}
-
-	return result, nil
+	return &SpawnResult{
+		SessionID: sessionID,
+		Label:     label,
+		Model:     model,
+	}, nil
 }

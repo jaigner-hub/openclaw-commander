@@ -421,12 +421,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spawnSuccessMsg:
 		m.spawnSpinning = false
 		m.spawning = false
-		label := "new agent"
+		m.lastError = ""
 		if msg.result != nil && msg.result.SessionID != "" {
-			label = msg.result.SessionID
+			m.lastError = "✅ Spawned: " + msg.result.SessionID
 		}
-		m.lastError = "" // clear any previous error
-		_ = label
 		// Refresh sessions to show the new one
 		return m, m.fetchSessions
 
