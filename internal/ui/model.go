@@ -437,7 +437,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logContent = newContent
 			m.currentQuery = msg.query
 			if m.logFollow && contentGrew {
-				m.logScrollPos = 999999
+				m.logScrollPos = m.maxLogScroll(m.logWidth())
 			}
 		} else {
 			m.currentQuery = msg.query
@@ -455,7 +455,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reply := cleanLogContent(msg.reply)
 		m.logContent += "\n─── SENT ───\n" + reply + "\n"
 		if m.logFollow {
-			m.logScrollPos = 999999
+			m.logScrollPos = m.maxLogScroll(m.logWidth())
 		}
 		// Refresh the session history
 		if m.selectedLogID != "" {
@@ -685,7 +685,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		} else {
 			m.logScrollPos++
 			m.clampLogScroll(m.logWidth())
-			m.logFollow = false
+			// Re-enable follow when user scrolls to bottom
+			if m.isAtBottom(m.logWidth()) {
+				m.logFollow = true
+			}
 		}
 		return *m, nil
 
@@ -709,7 +712,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			m.logScrollPos += pageSize
 			m.clampLogScroll(m.logWidth())
-			m.logFollow = false
+			// Re-enable follow when user scrolls to bottom
+			if m.isAtBottom(m.logWidth()) {
+				m.logFollow = true
+			}
 		}
 		return *m, nil
 
@@ -772,7 +778,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case key.Matches(msg, keys.Follow):
 		m.logFollow = !m.logFollow
 		if m.logFollow {
-			m.logScrollPos = 999999
+			m.logScrollPos = m.maxLogScroll(m.logWidth())
 		}
 		return *m, nil
 
@@ -791,7 +797,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			filtered := m.filterMessagesBySource(m.cachedMessages)
 			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 			if m.logFollow {
-				m.logScrollPos = 999999
+				m.logScrollPos = m.maxLogScroll(m.logWidth())
 			}
 		}
 		return *m, nil
@@ -803,7 +809,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			filtered := m.filterMessagesBySource(m.cachedMessages)
 			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 			if m.logFollow {
-				m.logScrollPos = 999999
+				m.logScrollPos = m.maxLogScroll(m.logWidth())
 			}
 		}
 		return *m, nil
@@ -966,22 +972,19 @@ func (m Model) selectedItemID() string {
 	return ""
 }
 
-func (m *Model) clampLogScroll(width int) {
+// maxLogScroll returns the maximum scroll position for the current log content.
+func (m *Model) maxLogScroll(width int) int {
 	if m.logContent == "" {
-		m.logScrollPos = 0
-		return
+		return 0
 	}
-	// Use wrapped lines (same as renderLogPanel) for accurate scroll bounds
 	rawLines := strings.Split(m.logContent, "\n")
-	var lines []string
+	var total int
 	for _, line := range rawLines {
 		if width > 0 && len(line) > width {
-			for len(line) > width {
-				lines = append(lines, line[:width])
-				line = line[width:]
-			}
+			total += (len(line) + width - 1) / width
+		} else {
+			total++
 		}
-		lines = append(lines, line)
 	}
 	viewH := m.logViewHeight() - 3
 	if m.currentQuery != "" {
@@ -990,10 +993,24 @@ func (m *Model) clampLogScroll(width int) {
 	if viewH < 1 {
 		viewH = 1
 	}
-	maxScroll := len(lines) - viewH
+	maxScroll := total - viewH
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
+	return maxScroll
+}
+
+// isAtBottom returns true if scroll position is at or near the bottom.
+func (m *Model) isAtBottom(width int) bool {
+	return m.logScrollPos >= m.maxLogScroll(width)-1
+}
+
+func (m *Model) clampLogScroll(width int) {
+	if m.logContent == "" {
+		m.logScrollPos = 0
+		return
+	}
+	maxScroll := m.maxLogScroll(width)
 	if m.logScrollPos > maxScroll {
 		m.logScrollPos = maxScroll
 	}
