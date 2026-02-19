@@ -434,10 +434,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only update content and scroll if something actually changed
 		if newContent != m.logContent {
 			if m.logFollow {
+				wasEmpty := len(m.logContent) == 0
 				contentGrew := len(newContent) > len(m.logContent)
 				m.logContent = newContent
 				m.currentQuery = msg.query
-				if contentGrew {
+				if contentGrew || wasEmpty {
 					m.logScrollPos = m.maxLogScroll(m.logWidth())
 				}
 			} else {
@@ -771,8 +772,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.selectedLogID = id
 			m.selectedLogTab = m.activeTab
 			m.activePanel = panelLogs
-			m.logScrollPos = 0 // Reset scroll to top initially
-			m.logFollow = true // Enable follow for new selection
+			m.logContent = ""   // Clear so first load scrolls to bottom
+			m.logScrollPos = 0  // Reset scroll position
+			m.logFollow = true  // Enable follow for new selection
 			return *m, tea.Batch(m.fetchLogs(id), tickLogs())
 		}
 		return *m, nil
