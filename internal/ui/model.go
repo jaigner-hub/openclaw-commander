@@ -433,15 +433,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Only update content and scroll if something actually changed
 		if newContent != m.logContent {
-			contentGrew := len(newContent) > len(m.logContent)
-			m.logContent = newContent
-			m.currentQuery = msg.query
-			if m.logFollow && contentGrew {
-				m.logScrollPos = m.maxLogScroll(m.logWidth())
+			if m.logFollow {
+				contentGrew := len(newContent) > len(m.logContent)
+				m.logContent = newContent
+				m.currentQuery = msg.query
+				if contentGrew {
+					m.logScrollPos = m.maxLogScroll(m.logWidth())
+				}
 			} else {
-				// Clamp scroll position to valid range after content change
-				// to prevent jumps on next user input
-				m.clampLogScroll(m.logWidth())
+				// When not following, anchor scroll position relative to the
+				// bottom so that appended content doesn't shift the view.
+				w := m.logWidth()
+				oldMax := m.maxLogScroll(w)
+				distFromBottom := oldMax - m.logScrollPos
+				m.logContent = newContent
+				m.currentQuery = msg.query
+				newMax := m.maxLogScroll(w)
+				m.logScrollPos = newMax - distFromBottom
+				if m.logScrollPos < 0 {
+					m.logScrollPos = 0
+				}
 			}
 		} else {
 			m.currentQuery = msg.query
