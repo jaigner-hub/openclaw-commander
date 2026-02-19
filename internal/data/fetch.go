@@ -841,6 +841,13 @@ func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (strin
 	var msgs []HistoryMessage
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	
+	// Track pending tool calls from assistant messages to pair with toolResults
+	var pendingToolCalls []struct {
+		Name string
+		Args string
+	}
+	
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var entry struct {
@@ -848,16 +855,20 @@ func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (strin
 			Message struct {
 				Role    string `json:"role"`
 				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type      string          `json:"type"`
+					Text      string          `json:"text"`
+					Name      string          `json:"name,omitempty"`
+					Arguments json.RawMessage `json:"arguments,omitempty"`
 				} `json:"content"`
 				ToolName string `json:"toolName,omitempty"`
 				IsError  bool   `json:"isError,omitempty"`
 			} `json:"message"`
 			Role    string `json:"role"`
 			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Name      string          `json:"name,omitempty"`
+				Arguments json.RawMessage `json:"arguments,omitempty"`
 			} `json:"content"`
 			Model    string `json:"model,omitempty"`
 			ToolName string `json:"toolName,omitempty"`
@@ -882,6 +893,75 @@ func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (strin
 			continue
 		}
 
+		// Handle assistant messages - extract tool calls from content
+		if role == "assistant" {
+			var text strings.Builder
+			for _, c := range content {
+				switch c.Type {
+				case "text":
+					if c.Text != "" {
+						if text.Len() > 0 {
+							text.WriteString("\n")
+						}
+						text.WriteString(c.Text)
+					}
+				case "toolCall", "tool_use":
+					// Store tool call for pairing with toolResult
+					args := extractToolArgsFromJSON(c.Arguments)
+					pendingToolCalls = append(pendingToolCalls, struct {
+						Name string
+						Args string
+					}{Name: c.Name, Args: args})
+				}
+			}
+			
+			msg := HistoryMessage{
+				Role:  role,
+				Model: entry.Model,
+				Text:  text.String(),
+			}
+			msgs = append(msgs, msg)
+			continue
+		}
+
+		// Handle toolResult - pair with pending tool call args
+		if role == "toolResult" || role == "tool" {
+			msg := HistoryMessage{
+				Role:      role,
+				Model:     entry.Model,
+				ToolName:  toolName,
+				ToolError: isError,
+			}
+			
+			// Extract result text from content
+			var text strings.Builder
+			for _, c := range content {
+				if c.Type == "text" && c.Text != "" {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(c.Text)
+				}
+			}
+			msg.Text = text.String()
+			
+			// Pair with pending tool call args if available
+			if len(pendingToolCalls) > 0 {
+				msg.ToolArgs = pendingToolCalls[0].Args
+				// If toolName is empty, use the pending call's name
+				if msg.ToolName == "" {
+					msg.ToolName = pendingToolCalls[0].Name
+				}
+				pendingToolCalls = pendingToolCalls[1:]
+			} else {
+				msg.ToolArgs = extractToolArgs(line)
+			}
+			
+			msgs = append(msgs, msg)
+			continue
+		}
+
+		// Default handling for user and other roles
 		var text strings.Builder
 		for _, c := range content {
 			if c.Type == "text" && c.Text != "" {
@@ -897,13 +977,6 @@ func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (strin
 			Model: entry.Model,
 			Text:  text.String(),
 		}
-
-		if role == "toolResult" || role == "toolUse" || role == "tool" {
-			msg.ToolName = toolName
-			msg.ToolError = isError
-			msg.ToolArgs = extractToolArgs(line)
-		}
-
 		msgs = append(msgs, msg)
 	}
 	return FormatHistory(msgs, verbose), nil
@@ -920,6 +993,13 @@ func (c *Client) ReadTranscriptMessages(path string) ([]HistoryMessage, error) {
 	var msgs []HistoryMessage
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	
+	// Track pending tool calls from assistant messages to pair with toolResults
+	var pendingToolCalls []struct {
+		Name string
+		Args string
+	}
+	
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var entry struct {
@@ -927,16 +1007,20 @@ func (c *Client) ReadTranscriptMessages(path string) ([]HistoryMessage, error) {
 			Message struct {
 				Role    string `json:"role"`
 				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type      string          `json:"type"`
+					Text      string          `json:"text"`
+					Name      string          `json:"name,omitempty"`
+					Arguments json.RawMessage `json:"arguments,omitempty"`
 				} `json:"content"`
 				ToolName string `json:"toolName,omitempty"`
 				IsError  bool   `json:"isError,omitempty"`
 			} `json:"message"`
 			Role    string `json:"role"`
 			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Name      string          `json:"name,omitempty"`
+				Arguments json.RawMessage `json:"arguments,omitempty"`
 			} `json:"content"`
 			Model    string `json:"model,omitempty"`
 			ToolName string `json:"toolName,omitempty"`
@@ -961,6 +1045,75 @@ func (c *Client) ReadTranscriptMessages(path string) ([]HistoryMessage, error) {
 			continue
 		}
 
+		// Handle assistant messages - extract tool calls from content
+		if role == "assistant" {
+			var text strings.Builder
+			for _, c := range content {
+				switch c.Type {
+				case "text":
+					if c.Text != "" {
+						if text.Len() > 0 {
+							text.WriteString("\n")
+						}
+						text.WriteString(c.Text)
+					}
+				case "toolCall", "tool_use":
+					// Store tool call for pairing with toolResult
+					args := extractToolArgsFromJSON(c.Arguments)
+					pendingToolCalls = append(pendingToolCalls, struct {
+						Name string
+						Args string
+					}{Name: c.Name, Args: args})
+				}
+			}
+			
+			msg := HistoryMessage{
+				Role:  role,
+				Model: entry.Model,
+				Text:  text.String(),
+			}
+			msgs = append(msgs, msg)
+			continue
+		}
+
+		// Handle toolResult - pair with pending tool call args
+		if role == "toolResult" || role == "tool" {
+			msg := HistoryMessage{
+				Role:      role,
+				Model:     entry.Model,
+				ToolName:  toolName,
+				ToolError: isError,
+			}
+			
+			// Extract result text from content
+			var text strings.Builder
+			for _, c := range content {
+				if c.Type == "text" && c.Text != "" {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(c.Text)
+				}
+			}
+			msg.Text = text.String()
+			
+			// Pair with pending tool call args if available
+			if len(pendingToolCalls) > 0 {
+				msg.ToolArgs = pendingToolCalls[0].Args
+				// If toolName is empty, use the pending call's name
+				if msg.ToolName == "" {
+					msg.ToolName = pendingToolCalls[0].Name
+				}
+				pendingToolCalls = pendingToolCalls[1:]
+			} else {
+				msg.ToolArgs = extractToolArgs(line)
+			}
+			
+			msgs = append(msgs, msg)
+			continue
+		}
+
+		// Default handling for user and other roles
 		var text strings.Builder
 		for _, c := range content {
 			if c.Type == "text" && c.Text != "" {
@@ -976,13 +1129,6 @@ func (c *Client) ReadTranscriptMessages(path string) ([]HistoryMessage, error) {
 			Model: entry.Model,
 			Text:  text.String(),
 		}
-
-		if role == "toolResult" || role == "toolUse" || role == "tool" {
-			msg.ToolName = toolName
-			msg.ToolError = isError
-			msg.ToolArgs = extractToolArgs(line)
-		}
-
 		msgs = append(msgs, msg)
 	}
 	return msgs, nil
