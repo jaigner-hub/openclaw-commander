@@ -22,7 +22,7 @@ A terminal dashboard for monitoring and interacting with [OpenClaw](https://gith
 **Recommended (explicit version avoids module proxy cache):**
 
 ```bash
-go install github.com/jaigner-hub/openclaw-commander@v0.2.7
+go install github.com/jaigner-hub/openclaw-commander@v0.2.8
 ```
 
 **Or install latest (may be cached by proxy.golang.org):**

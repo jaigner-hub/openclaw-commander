@@ -115,6 +115,7 @@ type Model struct {
 	lastLogContent   string
 	lastLogWidth     int
 	wrappedLines     []string
+	wrappedLinesHash string // hash of content that was wrapped
 
 	// Content hash for stable change detection
 	logContentHash   string
@@ -458,10 +459,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logContentHash = newHash
 		m.currentQuery = msg.query
 
-		// Invalidate wrapped lines cache immediately to prevent flash
-		m.lastLogContent = ""
-		m.lastLogWidth = 0
-		m.wrappedLines = nil
+		// NOTE: Do NOT manually invalidate wrapped lines cache here.
+		// The render loop will naturally detect the change via hash comparison
+		// and update the cache. Manual invalidation causes re-wrap jitter in follow mode.
 
 		if m.logFollow {
 			wasEmpty := len(oldContent) == 0
@@ -802,8 +802,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logContent = ""   // Clear so first load scrolls to bottom
 			m.logScrollPos = 0  // Reset scroll position
 			m.logFollow = true  // Enable follow for new selection
-			// Invalidate cache when selecting new log
-			m.lastLogContent = ""
+			// Invalidate cache when selecting new log (using hash)
+			m.wrappedLinesHash = ""
 			m.lastLogWidth = 0
 			m.wrappedLines = nil
 			return *m, tea.Batch(m.fetchLogs(id), tickLogs())
@@ -1455,8 +1455,8 @@ func (m Model) renderLogPanel(width, height int) string {
 	// Pre-wrap lines to fit width
 	rawLines := strings.Split(m.logContent, "\n")
 
-	// Cache wrapped lines to avoid re-wrapping on every render
-	if m.logContent != m.lastLogContent || width != m.lastLogWidth {
+	// Cache wrapped lines using hash for fast comparison (avoid expensive string compare)
+	if m.logContentHash != m.wrappedLinesHash || width != m.lastLogWidth {
 		m.wrappedLines = make([]string, 0, len(rawLines)*2)
 		for _, line := range rawLines {
 			if width > 0 && len(line) > width {
@@ -1467,7 +1467,7 @@ func (m Model) renderLogPanel(width, height int) string {
 			}
 			m.wrappedLines = append(m.wrappedLines, line)
 		}
-		m.lastLogContent = m.logContent
+		m.wrappedLinesHash = m.logContentHash
 		m.lastLogWidth = width
 	}
 	lines := m.wrappedLines
