@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -114,6 +115,10 @@ type Model struct {
 	lastLogContent   string
 	lastLogWidth     int
 	wrappedLines     []string
+
+	// Content hash for stable change detection
+	logContentHash   string
+	lastLogFetch     time.Time
 
 	client *data.Client
 }
@@ -427,6 +432,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logsMsg:
 		m.cachedMessages = msg.messages
 		m.cachedLogTab = msg.logTab
+		m.lastLogFetch = time.Now()
+
 		// Apply source filter if active
 		filtered := m.filterMessagesBySource(msg.messages)
 		// Re-format with filter applied (for sessions/history tabs)
@@ -436,32 +443,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			newContent = msg.content
 		}
-		// Only update content and scroll if something actually changed
-		if newContent != m.logContent {
-			if m.logFollow {
-				wasEmpty := len(m.logContent) == 0
-				contentGrew := len(newContent) > len(m.logContent)
-				m.logContent = newContent
-				m.currentQuery = msg.query
-				if contentGrew || wasEmpty {
-					m.logScrollPos = m.maxLogScroll(m.logWidth())
-				}
-			} else {
-				// When not following, anchor scroll position relative to the
-				// bottom so that appended content doesn't shift the view.
-				w := m.logWidth()
-				oldMax := m.maxLogScroll(w)
-				distFromBottom := oldMax - m.logScrollPos
-				m.logContent = newContent
-				m.currentQuery = msg.query
-				newMax := m.maxLogScroll(w)
-				m.logScrollPos = newMax - distFromBottom
-				if m.logScrollPos < 0 {
-					m.logScrollPos = 0
-				}
+
+		// Hash-based change detection for stable rendering
+		newHash := fmt.Sprintf("%x", sha256.Sum256([]byte(newContent)))
+		if newHash == m.logContentHash {
+			// Content unchanged, just update query if needed
+			m.currentQuery = msg.query
+			return m, nil
+		}
+
+		// Content changed - update everything
+		oldContent := m.logContent
+		m.logContent = newContent
+		m.logContentHash = newHash
+		m.currentQuery = msg.query
+
+		// Invalidate wrapped lines cache immediately to prevent flash
+		m.lastLogContent = ""
+		m.lastLogWidth = 0
+		m.wrappedLines = nil
+
+		if m.logFollow {
+			wasEmpty := len(oldContent) == 0
+			contentGrew := len(newContent) > len(oldContent)
+			if contentGrew || wasEmpty {
+				m.logScrollPos = m.maxLogScroll(m.logWidth())
 			}
 		} else {
-			m.currentQuery = msg.query
+			// When not following, anchor scroll position relative to the
+			// bottom so that appended content doesn't shift the view.
+			w := m.logWidth()
+			oldMax := m.maxLogScroll(w)
+			distFromBottom := oldMax - m.logScrollPos
+			newMax := m.maxLogScroll(w)
+			m.logScrollPos = newMax - distFromBottom
+			if m.logScrollPos < 0 {
+				m.logScrollPos = 0
+			}
 		}
 		return m, nil
 
@@ -521,8 +539,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickLogsMsg:
 		// Only fetch logs when following and a session is selected
+		// Throttle to avoid visual glitching (min 2s between fetches)
 		if m.selectedLogID != "" && m.logFollow {
-			return m, tea.Batch(m.fetchLogs(m.selectedLogID), tickLogs())
+			if time.Since(m.lastLogFetch) >= 2*time.Second {
+				return m, tea.Batch(m.fetchLogs(m.selectedLogID), tickLogs())
+			}
 		}
 		return m, tickLogs()
 
