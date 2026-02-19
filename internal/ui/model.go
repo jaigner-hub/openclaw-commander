@@ -425,14 +425,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Apply source filter if active
 		filtered := m.filterMessagesBySource(msg.messages)
 		// Re-format with filter applied (for sessions/history tabs)
+		var newContent string
 		if m.selectedLogTab != tabProcesses && len(filtered) != len(msg.messages) {
-			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
+			newContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 		} else {
-			m.logContent = msg.content
+			newContent = msg.content
 		}
-		m.currentQuery = msg.query
-		if m.logFollow {
-			m.logScrollPos = 999999
+		// Only update content and scroll if something actually changed
+		if newContent != m.logContent {
+			contentGrew := len(newContent) > len(m.logContent)
+			m.logContent = newContent
+			m.currentQuery = msg.query
+			if m.logFollow && contentGrew {
+				m.logScrollPos = 999999
+			}
+		} else {
+			m.currentQuery = msg.query
 		}
 		return m, nil
 
