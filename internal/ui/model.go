@@ -110,6 +110,11 @@ type Model struct {
 	// Source filter for channel separation (All/Signal/Matrix)
 	sourceFilter   string // "", "signal", or "matrix"
 
+	// Cached wrapped lines for stable rendering
+	lastLogContent   string
+	lastLogWidth     int
+	wrappedLines     []string
+
 	client *data.Client
 }
 
@@ -515,10 +520,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchProcesses, tickProcesses())
 
 	case tickLogsMsg:
-		if m.selectedLogID != "" {
+		// Only fetch logs when following and a session is selected
+		if m.selectedLogID != "" && m.logFollow {
 			return m, tea.Batch(m.fetchLogs(m.selectedLogID), tickLogs())
 		}
-		return m, nil
+		return m, tickLogs()
 
 	case tickHealthMsg:
 		return m, tea.Batch(m.fetchHealth, tickHealth())
@@ -775,6 +781,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logContent = ""   // Clear so first load scrolls to bottom
 			m.logScrollPos = 0  // Reset scroll position
 			m.logFollow = true  // Enable follow for new selection
+			// Invalidate cache when selecting new log
+			m.lastLogContent = ""
+			m.lastLogWidth = 0
+			m.wrappedLines = nil
 			return *m, tea.Batch(m.fetchLogs(id), tickLogs())
 		}
 		return *m, nil
@@ -1423,16 +1433,23 @@ func (m Model) renderLogPanel(width, height int) string {
 
 	// Pre-wrap lines to fit width
 	rawLines := strings.Split(m.logContent, "\n")
-	var lines []string
-	for _, line := range rawLines {
-		if width > 0 && len(line) > width {
-			for len(line) > width {
-				lines = append(lines, line[:width])
-				line = line[width:]
+
+	// Cache wrapped lines to avoid re-wrapping on every render
+	if m.logContent != m.lastLogContent || width != m.lastLogWidth {
+		m.wrappedLines = make([]string, 0, len(rawLines)*2)
+		for _, line := range rawLines {
+			if width > 0 && len(line) > width {
+				for len(line) > width {
+					m.wrappedLines = append(m.wrappedLines, line[:width])
+					line = line[width:]
+				}
 			}
+			m.wrappedLines = append(m.wrappedLines, line)
 		}
-		lines = append(lines, line)
+		m.lastLogContent = m.logContent
+		m.lastLogWidth = width
 	}
+	lines := m.wrappedLines
 
 	viewH := height - 3
 	if m.currentQuery != "" {
