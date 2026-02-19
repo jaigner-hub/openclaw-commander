@@ -93,8 +93,8 @@ func (c *Client) FetchProcesses() ([]Process, error) {
 		pid := fields[0]
 		etime := fields[1]
 		cmd := strings.Join(fields[2:], " ")
-		if len(cmd) > 60 {
-			cmd = cmd[:57] + "..."
+		if len(cmd) > 150 {
+			cmd = cmd[:147] + "..."
 		}
 
 		procs = append(procs, Process{
@@ -393,8 +393,8 @@ func extractToolArgsFromJSON(argsRaw json.RawMessage) string {
 	for _, key := range []string{"command", "file_path", "path", "query", "url", "action", "tool"} {
 		if v, ok := args[key]; ok {
 			s := fmt.Sprintf("%v", v)
-			if len(s) > 60 {
-				s = s[:57] + "..."
+			if len(s) > 200 {
+				s = s[:197] + "..."
 			}
 			parts = append(parts, s)
 		}
@@ -402,8 +402,8 @@ func extractToolArgsFromJSON(argsRaw json.RawMessage) string {
 	if len(parts) == 0 {
 		for _, v := range args {
 			s := fmt.Sprintf("%v", v)
-			if len(s) > 60 {
-				s = s[:57] + "..."
+			if len(s) > 200 {
+				s = s[:197] + "..."
 			}
 			parts = append(parts, s)
 			break
@@ -448,8 +448,8 @@ func extractToolArgs(raw json.RawMessage) string {
 	for _, key := range []string{"command", "file_path", "path", "query", "url", "action", "tool"} {
 		if v, ok := args[key]; ok {
 			s := fmt.Sprintf("%v", v)
-			if len(s) > 50 {
-				s = s[:47] + "..."
+			if len(s) > 200 {
+				s = s[:197] + "..."
 			}
 			parts = append(parts, s)
 		}
@@ -458,8 +458,8 @@ func extractToolArgs(raw json.RawMessage) string {
 		// Fallback: just show first value
 		for _, v := range args {
 			s := fmt.Sprintf("%v", v)
-			if len(s) > 50 {
-				s = s[:47] + "..."
+			if len(s) > 200 {
+				s = s[:197] + "..."
 			}
 			parts = append(parts, s)
 			break
@@ -637,8 +637,8 @@ func formatToolSummary(toolName, args, resultText string, isError bool) string {
 		return "edit " + args
 	case "exec", "bash", "shell":
 		cmd := args
-		if len(cmd) > 60 {
-			cmd = cmd[:57] + "..."
+		if len(cmd) > 150 {
+			cmd = cmd[:147] + "..."
 		}
 		if isError {
 			return fmt.Sprintf("ran %s (failed)", cmd)
@@ -653,8 +653,8 @@ func formatToolSummary(toolName, args, resultText string, isError bool) string {
 		if args != "" {
 			summary += " " + args
 		}
-		if len(summary) > 70 {
-			summary = summary[:67] + "..."
+		if len(summary) > 200 {
+			summary = summary[:197] + "..."
 		}
 		return summary
 	}
@@ -694,7 +694,7 @@ func shortenPath(path string) string {
 		}
 	}
 	// If still long, show last 2-3 path components
-	if len(path) > 50 {
+	if len(path) > 120 {
 		parts := strings.Split(path, "/")
 		if len(parts) > 3 {
 			return "…/" + strings.Join(parts[len(parts)-3:], "/")
@@ -814,8 +814,8 @@ func readTranscriptLabel(path string) string {
 					if idx := strings.IndexByte(text, '\n'); idx > 0 {
 						text = text[:idx]
 					}
-					if len(text) > 60 {
-						text = text[:57] + "..."
+					if len(text) > 200 {
+						text = text[:197] + "..."
 					}
 					return text
 				}
