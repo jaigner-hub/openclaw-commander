@@ -438,6 +438,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentQuery = msg.query
 			if m.logFollow && contentGrew {
 				m.logScrollPos = m.maxLogScroll(m.logWidth())
+			} else {
+				// Clamp scroll position to valid range after content change
+				// to prevent jumps on next user input
+				m.clampLogScroll(m.logWidth())
 			}
 		} else {
 			m.currentQuery = msg.query
@@ -798,6 +802,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 			if m.logFollow {
 				m.logScrollPos = m.maxLogScroll(m.logWidth())
+			} else {
+				m.clampLogScroll(m.logWidth())
 			}
 		}
 		return *m, nil
@@ -810,6 +816,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 			if m.logFollow {
 				m.logScrollPos = m.maxLogScroll(m.logWidth())
+			} else {
+				m.clampLogScroll(m.logWidth())
 			}
 		}
 		return *m, nil
@@ -1425,8 +1433,6 @@ func (m Model) renderLogPanel(width, height int) string {
 	if start > len(lines)-viewH {
 		start = max(0, len(lines)-viewH)
 	}
-	// Sync the clamped value back to scroll position to prevent state mismatch
-	m.logScrollPos = start
 	end := start + viewH
 	if end > len(lines) {
 		end = len(lines)
