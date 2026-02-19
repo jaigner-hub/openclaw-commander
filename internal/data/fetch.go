@@ -13,31 +13,21 @@ import (
 	"time"
 )
 
-// FetchSessions calls the sessions_list API tool and merges in any
-// recently-active disk sessions not tracked by the gateway (e.g. TUI-spawned).
+// FetchSessions uses `openclaw sessions --json` to list all sessions.
+// The CLI reads the session store directly and is not subject to the
+// per-session tool visibility scoping that limits the sessions_list tool.
 func (c *Client) FetchSessions() ([]Session, error) {
-	body, err := c.invoke(toolRequest{
-		Tool: "sessions_list",
-		Args: map[string]interface{}{},
-	})
+	out, err := exec.Command("openclaw", "sessions", "--json").Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("openclaw sessions: %w", err)
 	}
 
-	var resp APIResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	var resp SessionsResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
 		return nil, fmt.Errorf("parse sessions response: %w", err)
 	}
-	if !resp.OK {
-		return nil, fmt.Errorf("sessions_list: API returned ok=false")
-	}
 
-	var result SessionsListResult
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("parse sessions result: %w", err)
-	}
-
-	return result.Details.Sessions, nil
+	return resp.Sessions, nil
 }
 
 // FetchProcesses reads the agent-maintained process list file,
@@ -210,7 +200,9 @@ func (c *Client) FetchSessionHistory(sessionKey string, limit int) (string, erro
 }
 
 // FetchSessionMessages returns parsed history messages.
-func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMessage, error) {
+// sessionID is optional; if provided it is used as a fallback to read the
+// transcript file directly when the API denies access (visibility/tree errors).
+func (c *Client) FetchSessionMessages(sessionKey string, limit int, sessionID ...string) ([]HistoryMessage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -231,21 +223,67 @@ func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMe
 		return nil, fmt.Errorf("parse history response: %w", err)
 	}
 	if !resp.OK {
-		return nil, fmt.Errorf("sessions_history: API returned ok=false")
+		return nil, fmt.Errorf("sessions_history: API error")
 	}
 
-	var outer struct {
+	// The tool returns its result in result.content[0].text as a JSON string
+	// OR in result.details directly
+	var historyJSON []byte
+	
+	// Try to extract from content[0].text first
+	var contentResult struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 		Details json.RawMessage `json:"details"`
 	}
-	if err := json.Unmarshal(resp.Result, &outer); err != nil {
-		return nil, fmt.Errorf("parse history result: %w", err)
+	if err := json.Unmarshal(resp.Result, &contentResult); err == nil {
+		if len(contentResult.Content) > 0 && contentResult.Content[0].Type == "text" {
+			historyJSON = []byte(contentResult.Content[0].Text)
+		} else if len(contentResult.Details) > 0 {
+			historyJSON = contentResult.Details
+		}
+	}
+	
+	if len(historyJSON) == 0 {
+		historyJSON = resp.Result
+	}
+	
+	// Check if the history response contains an error (forbidden/visibility)
+	var checkErr struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	json.Unmarshal(historyJSON, &checkErr)
+	if checkErr.Status == "forbidden" || checkErr.Error != "" {
+		// Fall back to transcript file
+		sid := ""
+		if len(sessionID) > 0 {
+			sid = sessionID[0]
+		}
+		if sid == "" {
+			sid = sessionKey
+		}
+		if sid != "" {
+			path := filepath.Join(homeDir(), ".openclaw", "agents", "main", "sessions", sid+".jsonl")
+			if msgs, ferr := c.ReadTranscriptMessages(path); ferr == nil {
+				if limit > 0 && len(msgs) > limit {
+					msgs = msgs[len(msgs)-limit:]
+				}
+				return msgs, nil
+			}
+		}
+		return nil, fmt.Errorf("sessions_history: %s", checkErr.Error)
 	}
 
+	// Parse the actual history response
 	var result struct {
-		Messages []json.RawMessage `json:"messages"`
+		SessionKey string            `json:"sessionKey"`
+		Messages   []json.RawMessage `json:"messages"`
 	}
-	if err := json.Unmarshal(outer.Details, &result); err != nil {
-		return nil, fmt.Errorf("parse history details: %w", err)
+	if err := json.Unmarshal(historyJSON, &result); err != nil {
+		return nil, fmt.Errorf("parse history result: %w", err)
 	}
 
 	var msgs []HistoryMessage
@@ -254,8 +292,11 @@ func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMe
 			Role     string `json:"role"`
 			Model    string `json:"model,omitempty"`
 			Content  []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Name      string          `json:"name,omitempty"`
+				ID        string          `json:"id,omitempty"`
+				Arguments json.RawMessage `json:"arguments,omitempty"`
 			} `json:"content"`
 			ToolName   string `json:"toolName,omitempty"`
 			ToolCallId string `json:"toolCallId,omitempty"`
@@ -263,6 +304,54 @@ func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMe
 			Timestamp  int64  `json:"timestamp,omitempty"`
 		}
 		if json.Unmarshal(raw, &base) != nil {
+			continue
+		}
+
+		// Check if this assistant message contains toolCall content blocks
+		// If so, emit them as separate toolUse messages
+		if base.Role == "assistant" {
+			hasToolCalls := false
+			for _, c := range base.Content {
+				if c.Type == "toolCall" || c.Type == "tool_use" {
+					hasToolCalls = true
+					msg := HistoryMessage{
+						Role:      "toolUse",
+						Model:     base.Model,
+						ToolName:  c.Name,
+						Timestamp: base.Timestamp,
+					}
+					// Extract args summary from the arguments
+					if len(c.Arguments) > 0 {
+						msg.ToolArgs = extractToolArgsFromJSON(c.Arguments)
+					}
+					msgs = append(msgs, msg)
+				}
+			}
+			// Also emit any text content as an assistant message
+			var text strings.Builder
+			for _, c := range base.Content {
+				if c.Type == "text" && c.Text != "" {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(c.Text)
+				}
+			}
+			if text.Len() > 0 {
+				msgs = append(msgs, HistoryMessage{
+					Role:      "assistant",
+					Model:     base.Model,
+					Text:      text.String(),
+					Timestamp: base.Timestamp,
+				})
+			} else if !hasToolCalls {
+				// Empty assistant message with no tools
+				msgs = append(msgs, HistoryMessage{
+					Role:      "assistant",
+					Model:     base.Model,
+					Timestamp: base.Timestamp,
+				})
+			}
 			continue
 		}
 
@@ -292,6 +381,35 @@ func (c *Client) FetchSessionMessages(sessionKey string, limit int) ([]HistoryMe
 		msgs = append(msgs, msg)
 	}
 	return msgs, nil
+}
+
+// extractToolArgsFromJSON extracts a short summary from tool call arguments JSON.
+func extractToolArgsFromJSON(argsRaw json.RawMessage) string {
+	var args map[string]interface{}
+	if json.Unmarshal(argsRaw, &args) != nil {
+		return ""
+	}
+	var parts []string
+	for _, key := range []string{"command", "file_path", "path", "query", "url", "action", "tool"} {
+		if v, ok := args[key]; ok {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 60 {
+				s = s[:57] + "..."
+			}
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		for _, v := range args {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 60 {
+				s = s[:57] + "..."
+			}
+			parts = append(parts, s)
+			break
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // extractToolArgs tries to get a short summary of tool arguments.
@@ -387,6 +505,61 @@ func toolEmoji(name string) string {
 // FormatHistory renders messages according to the verbose level.
 func FormatHistory(msgs []HistoryMessage, verbose VerboseLevel) string {
 	var sb strings.Builder
+	// Track consecutive tool calls for collapsing in summary mode
+	var toolBatch []HistoryMessage
+
+	flushToolBatch := func() {
+		if len(toolBatch) == 0 {
+			return
+		}
+		// Filter to only results (skip toolUse entries)
+		var results []HistoryMessage
+		// Build a map of toolUse args by matching order (toolUse comes before its toolResult)
+		var useArgs []string
+		for _, m := range toolBatch {
+			if m.Role == "toolUse" {
+				useArgs = append(useArgs, m.ToolArgs)
+			} else if m.Role == "toolResult" || m.Role == "tool" {
+				// Prefer toolUse args (they have the input info like file path)
+				args := m.ToolArgs
+				if len(useArgs) > 0 {
+					args = useArgs[0]
+					useArgs = useArgs[1:]
+				}
+				m.ToolArgs = args
+				results = append(results, m)
+			}
+		}
+		for _, msg := range results {
+			name := msg.ToolName
+			if name == "" {
+				name = "tool"
+			}
+			emoji := toolEmoji(name)
+			status := "✓"
+			if msg.ToolError {
+				status = "✗"
+			}
+			summary := formatToolSummary(name, msg.ToolArgs, msg.Text, msg.ToolError)
+			line := fmt.Sprintf(" %s %s %s", status, emoji, summary)
+			sb.WriteString(line + "\n")
+			if msg.ToolError && msg.Text != "" {
+				errLines := strings.Split(msg.Text, "\n")
+				limit := 6
+				if len(errLines) < limit {
+					limit = len(errLines)
+				}
+				for _, el := range errLines[:limit] {
+					sb.WriteString("   " + el + "\n")
+				}
+				if len(errLines) > 6 {
+					sb.WriteString("   …\n")
+				}
+			}
+		}
+		toolBatch = nil
+	}
+
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "toolResult", "toolUse", "tool":
@@ -394,39 +567,10 @@ func FormatHistory(msgs []HistoryMessage, verbose VerboseLevel) string {
 			case VerboseOff:
 				continue
 			case VerboseSummary:
-				name := msg.ToolName
-				if name == "" {
-					name = "tool"
-				}
-				emoji := toolEmoji(name)
-				status := "✓"
-				if msg.ToolError {
-					status = "✗"
-				}
-				if msg.Role == "toolUse" {
-					// toolUse is the call, show args
-					line := fmt.Sprintf(" %s %s %s", emoji, name, msg.ToolArgs)
-					sb.WriteString(line + "\n")
-					continue
-				}
-				// toolResult — show status
-				line := fmt.Sprintf(" %s %s %s  %s", status, emoji, name, msg.ToolArgs)
-				sb.WriteString(line + "\n")
-				if msg.ToolError && msg.Text != "" {
-					// Auto-expand: show first 6 lines of error
-					errLines := strings.Split(msg.Text, "\n")
-					limit := 6
-					if len(errLines) < limit {
-						limit = len(errLines)
-					}
-					for _, el := range errLines[:limit] {
-						sb.WriteString("   " + el + "\n")
-					}
-					if len(errLines) > 6 {
-						sb.WriteString("   …\n")
-					}
-				}
+				toolBatch = append(toolBatch, msg)
+				continue
 			case VerboseFull:
+				flushToolBatch()
 				role := strings.ToUpper(msg.Role)
 				name := msg.ToolName
 				if name != "" {
@@ -439,6 +583,10 @@ func FormatHistory(msgs []HistoryMessage, verbose VerboseLevel) string {
 				sb.WriteString("\n")
 			}
 		default:
+			// Flush any pending tool batch before non-tool message
+			if verbose == VerboseSummary {
+				flushToolBatch()
+			}
 			role := strings.ToUpper(msg.Role)
 			sb.WriteString(fmt.Sprintf("─── %s ", role))
 			if msg.Model != "" {
@@ -451,7 +599,113 @@ func FormatHistory(msgs []HistoryMessage, verbose VerboseLevel) string {
 			sb.WriteString("\n")
 		}
 	}
+	// Flush any remaining tool batch
+	if verbose == VerboseSummary {
+		flushToolBatch()
+	}
 	return sb.String()
+}
+
+// formatToolSummary produces a Claude Code-style one-liner for a tool call.
+func formatToolSummary(toolName, args, resultText string, isError bool) string {
+	lower := strings.ToLower(toolName)
+	switch lower {
+	case "write", "file_write":
+		path := extractArgValue(args, "file_path", "path")
+		if path != "" {
+			// Count lines written from result text
+			lineInfo := ""
+			if resultText != "" {
+				if idx := strings.Index(resultText, "bytes"); idx > 0 {
+					lineInfo = " " + dimStyleGlobal(strings.TrimSpace(resultText[:idx+5]))
+				}
+			}
+			return fmt.Sprintf("wrote %s%s", shortenPath(path), lineInfo)
+		}
+		return "write " + args
+	case "read", "file_read":
+		path := extractArgValue(args, "file_path", "path")
+		if path != "" {
+			return fmt.Sprintf("read %s", shortenPath(path))
+		}
+		return "read " + args
+	case "edit", "file_edit":
+		path := extractArgValue(args, "file_path", "path")
+		if path != "" {
+			return fmt.Sprintf("edit %s", shortenPath(path))
+		}
+		return "edit " + args
+	case "exec", "bash", "shell":
+		cmd := args
+		if len(cmd) > 60 {
+			cmd = cmd[:57] + "..."
+		}
+		if isError {
+			return fmt.Sprintf("ran %s (failed)", cmd)
+		}
+		return fmt.Sprintf("ran %s", cmd)
+	case "web_search", "search":
+		return fmt.Sprintf("searched %s", args)
+	case "web_fetch", "fetch":
+		return fmt.Sprintf("fetched %s", args)
+	default:
+		summary := toolName
+		if args != "" {
+			summary += " " + args
+		}
+		if len(summary) > 70 {
+			summary = summary[:67] + "..."
+		}
+		return summary
+	}
+}
+
+// extractArgValue tries to find a specific arg value from the args summary string.
+// Since args is a pre-formatted string, we do simple substring matching.
+func extractArgValue(args string, keys ...string) string {
+	// The args string is built from extractToolArgs — it's the raw value for priority keys
+	// For write/read/edit, the first arg is typically the path
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
+		return ""
+	}
+	// If it looks like a file path (contains / or \), return it
+	if strings.Contains(trimmed, "/") || strings.Contains(trimmed, "\\") {
+		// Take just the first space-delimited token if there are multiple
+		parts := strings.Fields(trimmed)
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return trimmed
+}
+
+// shortenPath returns a shorter version of a file path for display.
+func shortenPath(path string) string {
+	// Remove common prefixes
+	prefixes := []string{
+		"/home/enum/Projects/",
+		"/home/enum/.openclaw/workspace/",
+		"/home/enum/",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(path, p) {
+			return path[len(p):]
+		}
+	}
+	// If still long, show last 2-3 path components
+	if len(path) > 50 {
+		parts := strings.Split(path, "/")
+		if len(parts) > 3 {
+			return "…/" + strings.Join(parts[len(parts)-3:], "/")
+		}
+	}
+	return path
+}
+
+// dimStyleGlobal applies dim styling to text (standalone function for use outside View).
+func dimStyleGlobal(s string) string {
+	return "\033[2m" + s + "\033[0m"
 }
 
 // SendMessage sends a message to a session via `openclaw agent`.
@@ -653,6 +907,85 @@ func (c *Client) ReadTranscriptVerbose(path string, verbose VerboseLevel) (strin
 		msgs = append(msgs, msg)
 	}
 	return FormatHistory(msgs, verbose), nil
+}
+
+// ReadTranscriptMessages parses a transcript file into HistoryMessage slices.
+func (c *Client) ReadTranscriptMessages(path string) ([]HistoryMessage, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var msgs []HistoryMessage
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				ToolName string `json:"toolName,omitempty"`
+				IsError  bool   `json:"isError,omitempty"`
+			} `json:"message"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Model    string `json:"model,omitempty"`
+			ToolName string `json:"toolName,omitempty"`
+			IsError  bool   `json:"isError,omitempty"`
+		}
+		if json.Unmarshal(line, &entry) != nil {
+			continue
+		}
+
+		role := entry.Message.Role
+		content := entry.Message.Content
+		toolName := entry.Message.ToolName
+		isError := entry.Message.IsError
+		if role == "" {
+			role = entry.Role
+			content = entry.Content
+			toolName = entry.ToolName
+			isError = entry.IsError
+		}
+
+		if role == "" || (entry.Type != "" && entry.Type != "message") {
+			continue
+		}
+
+		var text strings.Builder
+		for _, c := range content {
+			if c.Type == "text" && c.Text != "" {
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(c.Text)
+			}
+		}
+
+		msg := HistoryMessage{
+			Role:  role,
+			Model: entry.Model,
+			Text:  text.String(),
+		}
+
+		if role == "toolResult" || role == "toolUse" || role == "tool" {
+			msg.ToolName = toolName
+			msg.ToolError = isError
+			msg.ToolArgs = extractToolArgs(line)
+		}
+
+		msgs = append(msgs, msg)
+	}
+	return msgs, nil
 }
 
 func homeDir() string {

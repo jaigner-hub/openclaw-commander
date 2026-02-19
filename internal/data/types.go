@@ -8,6 +8,7 @@ type Session struct {
 	Kind           string `json:"kind"`
 	Channel        string `json:"channel"`
 	DisplayName    string `json:"displayName"`
+	Label          string `json:"label"`
 	Model          string `json:"model"`
 	UpdatedAt      int64  `json:"updatedAt"`
 	AgeMs          int64  `json:"ageMs"`
@@ -19,6 +20,98 @@ type Session struct {
 	TranscriptPath string `json:"transcriptPath"`
 	SystemSent     bool   `json:"systemSent"`
 	AbortedLastRun bool   `json:"abortedLastRun"`
+	Status         string `json:"status"`
+	ErrorMessage   string `json:"errorMessage"`
+}
+
+// ModelAlias returns a short alias for a model name.
+func ModelAlias(model string) string {
+	aliases := map[string]string{
+		"claude-opus-4-6":           "opus",
+		"claude-opus-4":             "opus",
+		"claude-sonnet-4":           "sonnet",
+		"claude-3-5-sonnet":         "sonnet-3.5",
+		"claude-3-5-haiku":          "haiku-3.5",
+		"claude-3-haiku":            "haiku",
+		"kimi-coding/k2p5":          "k2p5",
+		"gpt-4o":                    "4o",
+		"gpt-4o-mini":               "4o-mini",
+		"o1":                        "o1",
+		"o1-mini":                   "o1-mini",
+		"o3":                        "o3",
+		"o3-mini":                   "o3-mini",
+		"gemini-2.5-pro":            "gem-pro",
+		"gemini-2.5-flash":          "gem-flash",
+		"deepseek-chat":             "ds-chat",
+		"deepseek-reasoner":         "ds-r1",
+	}
+	// Exact match
+	if a, ok := aliases[model]; ok {
+		return a
+	}
+	// Try partial match (model string may have provider prefix)
+	for k, v := range aliases {
+		if len(k) > 5 && (len(model) > len(k)) {
+			// Check if model ends with the key
+			if model[len(model)-len(k):] == k {
+				return v
+			}
+		}
+		// Check if model contains the key
+		if len(k) > 8 && contains(model, k) {
+			return v
+		}
+	}
+	// Fallback: last segment, truncated
+	parts := splitAny(model, "/:")
+	short := parts[len(parts)-1]
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	return short
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr) >= 0
+}
+
+func searchString(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
+func splitAny(s string, delims string) []string {
+	f := func(c rune) bool {
+		for _, d := range delims {
+			if c == d {
+				return true
+			}
+		}
+		return false
+	}
+	parts := []string{}
+	current := ""
+	for _, c := range s {
+		if f(c) {
+			if current != "" {
+				parts = append(parts, current)
+			}
+			current = ""
+		} else {
+			current += string(c)
+		}
+	}
+	if current != "" {
+		parts = append(parts, current)
+	}
+	if len(parts) == 0 {
+		return []string{s}
+	}
+	return parts
 }
 
 // SessionsResponse is the wrapper from `openclaw sessions --json` (CLI fallback).

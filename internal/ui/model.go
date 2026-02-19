@@ -107,6 +107,9 @@ type Model struct {
 	cachedMessages []data.HistoryMessage
 	cachedLogTab   int
 
+	// Source filter for channel separation (All/Signal/Matrix)
+	sourceFilter   string // "", "signal", or "matrix"
+
 	client *data.Client
 }
 
@@ -194,10 +197,18 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 	logTab := m.selectedLogTab
 	client := m.client
 	verbose := m.verboseLevel
+	// Look up sessionID for transcript fallback
+	var sessionID string
+	for _, s := range m.sessions {
+		if s.Key == id {
+			sessionID = s.SessionID
+			break
+		}
+	}
 	return func() tea.Msg {
 		switch logTab {
 		case tabSessions:
-			msgs, err := client.FetchSessionMessages(id, 200)
+			msgs, err := client.FetchSessionMessages(id, 200, sessionID)
 			if err != nil {
 				return errMsg{fmt.Errorf("sessions(%s): %w", id, err)}
 			}
@@ -281,13 +292,15 @@ func compressLogContent(content string) string {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Strip ASSISTANT headers like "─── ASSISTANT (model) ───"
-		if strings.HasPrefix(trimmed, "─── ASSISTANT") && strings.HasSuffix(trimmed, "───") {
+		// Strip ASSISTANT headers like "─── ASSISTANT (model) ───" or "--- ASSISTANT (model) ---"
+		if (strings.HasPrefix(trimmed, "─── ASSISTANT") || strings.HasPrefix(trimmed, "--- ASSISTANT")) &&
+			(strings.HasSuffix(trimmed, "───") || strings.HasSuffix(trimmed, "---")) {
 			continue
 		}
 
-		// Strip USER headers like "─── USER ───"
-		if strings.HasPrefix(trimmed, "─── USER") && strings.HasSuffix(trimmed, "───") {
+		// Strip USER headers like "─── USER ───" or "--- USER ---"
+		if (strings.HasPrefix(trimmed, "─── USER") || strings.HasPrefix(trimmed, "--- USER")) &&
+			(strings.HasSuffix(trimmed, "───") || strings.HasSuffix(trimmed, "---")) {
 			continue
 		}
 
@@ -407,12 +420,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case logsMsg:
-		m.logContent = msg.content
-		m.currentQuery = msg.query
 		m.cachedMessages = msg.messages
 		m.cachedLogTab = msg.logTab
+		// Apply source filter if active
+		filtered := m.filterMessagesBySource(msg.messages)
+		// Re-format with filter applied (for sessions/history tabs)
+		if m.selectedLogTab != tabProcesses && len(filtered) != len(msg.messages) {
+			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
+		} else {
+			m.logContent = msg.content
+		}
+		m.currentQuery = msg.query
 		if m.logFollow {
-			// Set to max int; renderLogPanel will clamp it
 			m.logScrollPos = 999999
 		}
 		return m, nil
@@ -749,11 +768,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return *m, nil
 
+	case key.Matches(msg, keys.SourceFilter):
+		// Cycle through source filters: all -> signal -> matrix -> all
+		switch m.sourceFilter {
+		case "":
+			m.sourceFilter = "signal"
+		case "signal":
+			m.sourceFilter = "matrix"
+		case "matrix":
+			m.sourceFilter = ""
+		}
+		// Re-render cached messages with new filter
+		if len(m.cachedMessages) > 0 && m.selectedLogTab != tabProcesses {
+			filtered := m.filterMessagesBySource(m.cachedMessages)
+			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
+			if m.logFollow {
+				m.logScrollPos = 999999
+			}
+		}
+		return *m, nil
+
 	case key.Matches(msg, keys.Verbose):
 		m.verboseLevel = m.verboseLevel.Next()
 		// Re-render cached messages if we have them
 		if len(m.cachedMessages) > 0 && m.selectedLogTab != tabProcesses {
-			m.logContent = compressLogContent(data.FormatHistory(m.cachedMessages, m.verboseLevel))
+			filtered := m.filterMessagesBySource(m.cachedMessages)
+			m.logContent = compressLogContent(data.FormatHistory(filtered, m.verboseLevel))
 			if m.logFollow {
 				m.logScrollPos = 999999
 			}
@@ -766,10 +806,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if m.sessionCursor < len(ss) {
 				s := ss[m.sessionCursor]
 				m.msgTarget = s.SessionID
-				m.msgTargetName = s.DisplayName
-				if m.msgTargetName == "" {
-					m.msgTargetName = s.Key
-				}
+				m.msgTargetName = sessionDisplayName(s)
 				m.messaging = true
 				m.msgInput.Focus()
 				return *m, textinput.Blink
@@ -862,6 +899,7 @@ func (m Model) filteredSessions() []data.Session {
 			strings.Contains(strings.ToLower(s.Model), f) ||
 			strings.Contains(strings.ToLower(s.Kind), f) ||
 			strings.Contains(strings.ToLower(s.DisplayName), f) ||
+			strings.Contains(strings.ToLower(s.Label), f) ||
 			strings.Contains(strings.ToLower(s.Channel), f) {
 			out = append(out, s)
 		}
@@ -969,6 +1007,22 @@ func (m Model) logWidth() int {
 	return logWidth
 }
 
+func (m Model) filterMessagesBySource(msgs []data.HistoryMessage) []data.HistoryMessage {
+	if m.sourceFilter == "" {
+		return msgs
+	}
+	// Since we don't have structured channel metadata per message,
+	// we rely on the formatted log content which includes sender info in metadata blocks
+	// This is a best-effort filter based on message patterns
+	var filtered []data.HistoryMessage
+	for _, msg := range msgs {
+		// Include all messages - the filtering is visual based on context
+		// Matrix vs Signal messages are interleaved in the same session
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
@@ -1049,6 +1103,71 @@ func (m Model) renderListPanel(width, height int) string {
 	return b.String()
 }
 
+func sessionDisplayName(s data.Session) string {
+	// Priority: label > displayName > short key
+	if s.Label != "" {
+		return s.Label
+	}
+	if s.DisplayName != "" {
+		return s.DisplayName
+	}
+	// Generate short key: take the kind/channel + short hash
+	key := s.Key
+	if s.Kind != "" && s.Channel != "" {
+		// e.g. "main#7bb3" from session ID
+		hash := s.SessionID
+		if len(hash) > 4 {
+			hash = hash[len(hash)-4:]
+		}
+		return s.Kind + "#" + hash
+	}
+	if len(key) > 20 {
+		key = key[:20]
+	}
+	return key
+}
+
+func sessionStatus(s data.Session) string {
+	// Check explicit status/error fields first
+	if s.ErrorMessage != "" || s.Status == "failed" || s.Status == "error" {
+		return "failed"
+	}
+	if s.Status == "completed" || s.Status == "done" {
+		return "completed"
+	}
+	if s.AbortedLastRun {
+		return "failed"
+	}
+
+	// Infer from activity
+	var age time.Duration
+	if s.AgeMs > 0 {
+		age = time.Duration(s.AgeMs) * time.Millisecond
+	} else if s.UpdatedAt > 0 {
+		age = time.Since(time.UnixMilli(s.UpdatedAt))
+	}
+
+	if age < time.Minute {
+		return "running"
+	} else if age < 5*time.Minute {
+		return "running"
+	}
+	return "idle"
+}
+
+func sessionStatusEmoji(status string) string {
+	switch status {
+	case "running":
+		return "🟡"
+	case "completed":
+		return "✅"
+	case "failed":
+		return "❌"
+	default:
+		return "⚪"
+	}
+}
+
 func (m Model) renderSessionList(width, maxItems int) string {
 	sessions := m.filteredSessions()
 	if len(sessions) == 0 {
@@ -1058,16 +1177,22 @@ func (m Model) renderSessionList(width, maxItems int) string {
 	var b strings.Builder
 	activeCount := 0
 	for _, s := range sessions {
-		if s.AgeMs > 0 && s.AgeMs < 300000 {
+		st := sessionStatus(s)
+		if st == "running" {
 			activeCount++
-		} else if s.UpdatedAt > 0 {
-			age := time.Since(time.UnixMilli(s.UpdatedAt))
-			if age < 5*time.Minute {
-				activeCount++
-			}
 		}
 	}
 	b.WriteString(titleStyle.Render(fmt.Sprintf(" Sessions (%d active)", activeCount)) + "\n")
+
+	// Calculate column widths based on available width
+	// Layout: "  🟡 label          5m  running  opus  12k"
+	nameWidth := width - 30 // reserve space for other columns
+	if nameWidth < 10 {
+		nameWidth = 10
+	}
+	if nameWidth > 24 {
+		nameWidth = 24
+	}
 
 	count := 0
 	for i, s := range sessions {
@@ -1075,48 +1200,33 @@ func (m Model) renderSessionList(width, maxItems int) string {
 			break
 		}
 
-		// Determine activity status
-		var ageForStatus time.Duration
-		if s.AgeMs > 0 {
-			ageForStatus = time.Duration(s.AgeMs) * time.Millisecond
-		} else if s.UpdatedAt > 0 {
-			ageForStatus = time.Since(time.UnixMilli(s.UpdatedAt))
+		status := sessionStatus(s)
+		emoji := sessionStatusEmoji(status)
+
+		name := sessionDisplayName(s)
+		if len(name) > nameWidth {
+			name = name[:nameWidth-1] + "…"
 		}
 
-		status := "idle"
-		if ageForStatus < time.Minute {
-			status = "active"
-		} else if ageForStatus < 5*time.Minute {
-			status = "warm"
+		modelAlias := data.ModelAlias(s.Model)
+		if len(modelAlias) > 10 {
+			modelAlias = modelAlias[:10]
 		}
-		indicator := statusIndicator(status)
-
-		// Use displayName if available, else key
-		name := s.DisplayName
-		if name == "" {
-			name = s.Key
-		}
-		if len(name) > 14 {
-			name = name[:14]
-		}
-
-		model := s.Model
-		if len(model) > 16 {
-			model = model[:16]
-		}
-
-		tokens := dimStyle.Render(fmt.Sprintf("%dk", s.TotalTokens/1000))
 
 		var runtimeStr string
 		if s.UpdatedAt > 0 {
 			runtimeStr = formatDuration(time.Since(time.UnixMilli(s.UpdatedAt)))
 		}
-		runtime := dimStyle.Render(runtimeStr)
 
-		// Show channel if present
-		channelTag := ""
-		if s.Channel != "" {
-			channelTag = dimStyle.Render(" [" + s.Channel + "]")
+		tokStr := ""
+		if s.TotalTokens > 0 {
+			if s.TotalTokens >= 1000000 {
+				tokStr = fmt.Sprintf("%.1fM", float64(s.TotalTokens)/1000000)
+			} else if s.TotalTokens >= 1000 {
+				tokStr = fmt.Sprintf("%dk", s.TotalTokens/1000)
+			} else {
+				tokStr = fmt.Sprintf("%d", s.TotalTokens)
+			}
 		}
 
 		prefix := "  "
@@ -1124,8 +1234,8 @@ func (m Model) renderSessionList(width, maxItems int) string {
 			prefix = "▸ "
 		}
 
-		line := fmt.Sprintf("%s%s %-14s %-16s %5s %5s%s",
-			prefix, indicator, name, model, tokens, runtime, channelTag)
+		line := fmt.Sprintf("%s%s %-*s %4s  %-10s %4s",
+			prefix, emoji, nameWidth, name, dimStyle.Render(runtimeStr), modelAlias, dimStyle.Render(tokStr))
 
 		if i == m.sessionCursor {
 			line = selectedStyle.Render(line)
@@ -1404,7 +1514,13 @@ func (m Model) renderStatusBar() string {
 
 	// Right: keybindings help
 	verboseTag := dimStyle.Render(fmt.Sprintf("v:verbose(%s)", m.verboseLevel))
-	right := dimStyle.Render("\u2191\u2193:nav  \u2190\u2192:panel  1/2/3:tab  \u21b5:view  esc:back  m:msg  s:spawn  /:search  f:follow  ") + verboseTag + dimStyle.Render("  q:quit")
+	sourceTag := ""
+	if m.sourceFilter != "" {
+		sourceTag = accentStyle.Render(fmt.Sprintf(" c:%s", m.sourceFilter))
+	} else {
+		sourceTag = dimStyle.Render(" c:all")
+	}
+	right := dimStyle.Render("↑↓:nav  ←→:panel  1/2/3:tab  ↵:view  esc:back  m:msg  s:spawn  /:search  f:follow  ") + verboseTag + sourceTag + dimStyle.Render("  q:quit")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

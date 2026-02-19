@@ -87,14 +87,16 @@ func statusStyle(status string) lipgloss.Style {
 
 func statusIndicator(status string) string {
 	switch status {
-	case "running", "active", "warm":
-		return statusRunning.Render("\u25cf")
-	case "thinking", "working":
-		return statusThinking.Render("\u25cf")
+	case "running", "active":
+		return "🟡 "
+	case "completed", "done":
+		return "✅ "
 	case "failed", "error":
-		return statusFailed.Render("\u25cf")
+		return "❌ "
+	case "idle", "warm":
+		return "⚪ "
 	default:
-		return dimStyle.Render("\u25cb")
+		return "⚪ "
 	}
 }
 
