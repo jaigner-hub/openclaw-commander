@@ -219,9 +219,15 @@ func (m Model) fetchLogs(id string) tea.Cmd {
 	return func() tea.Msg {
 		switch logTab {
 		case tabSessions:
+			// Debug: log what we're fetching
+			debugInfo := fmt.Sprintf("[DEBUG] Fetching session:\n  Key: %s\n  SessionID: %s\n", id, sessionID)
 			msgs, err := client.FetchSessionMessages(id, 200, sessionID)
 			if err != nil {
-				return errMsg{fmt.Errorf("sessions(%s): %w", id, err)}
+				// Return error with context about what was tried
+				return errMsg{fmt.Errorf("sessions(%s, sessionID=%s): %w", id, sessionID, err)}
+			}
+			if len(msgs) == 0 {
+				return logsMsg{content: debugInfo + "[No messages returned from session]", query: "", messages: msgs, logTab: logTab}
 			}
 			content := data.FormatHistory(msgs, verbose)
 			content = cleanLogContent(content)
