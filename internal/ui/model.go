@@ -445,6 +445,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newContent = msg.content
 		}
 
+		// Skip empty content (preserve existing log on fetch failure/empty)
+		if newContent == "" && m.logContent != "" && m.logContent != "Loading..." {
+			m.currentQuery = msg.query
+			return m, nil
+		}
+
 		// Hash-based change detection for stable rendering
 		newHash := fmt.Sprintf("%x", sha256.Sum256([]byte(newContent)))
 		if newHash == m.logContentHash {
@@ -464,7 +470,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and update the cache. Manual invalidation causes re-wrap jitter in follow mode.
 
 		if m.logFollow {
-			wasEmpty := len(oldContent) == 0
+			wasEmpty := len(oldContent) == 0 || oldContent == "Loading..."
 			contentGrew := len(newContent) > len(oldContent)
 			if contentGrew || wasEmpty {
 				m.logScrollPos = m.maxLogScroll(m.logWidth())
@@ -529,6 +535,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sending = false
 		m.spawnSpinning = false
 		m.lastError = msg.err.Error()
+		// If log fetch failed, show error in log panel
+		if m.selectedLogID != "" && m.logContent == "" || m.logContent == "Loading..." {
+			m.logContent = "Error loading logs:\n" + msg.err.Error()
+			m.logContentHash = "" // Force re-wrap
+		}
 		return m, nil
 
 	case tickSessionsMsg:
@@ -799,7 +810,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.selectedLogID = id
 			m.selectedLogTab = m.activeTab
 			m.activePanel = panelLogs
-			m.logContent = ""   // Clear so first load scrolls to bottom
+			// Don't clear logContent immediately - let the fetch update it
+			// This way if fetch fails, we still show something
+			if m.logContent == "" {
+				m.logContent = "Loading..."
+			}
 			m.logScrollPos = 0  // Reset scroll position
 			m.logFollow = true  // Enable follow for new selection
 			// Invalidate cache when selecting new log (using hash)
